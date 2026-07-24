@@ -48,11 +48,13 @@ jobs:
           git remote set-url origin "https://x-access-token:${PUBLIC_TOKEN}@github.com/Jason-sui-1120/shengji-voice-recorder.git"
           node "$GITHUB_WORKSPACE/scripts/sync-core.mjs" --target /tmp/public --sync
           git add -A
-          git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
+          git diff --staged --quiet || {
+            git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
 
           Auto-synced by shengji-core CI. Do not edit directly.
           Source: https://github.com/Jason-sui-1120/shengji-core/commit/${GITHUB_SHA}"
-          git push origin main
+            git push origin main
+          } || echo "no changes to sync"
 
       - name: Sync to company repo
         env:
@@ -70,8 +72,10 @@ jobs:
           git config user.email "bot@shengji-core"
           node "$GITHUB_WORKSPACE/scripts/sync-core.mjs" --target /tmp/company --sync
           git add -A
-          git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
+          git diff --staged --quiet || {
+            git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
 
           Auto-synced by shengji-core CI. Do not edit directly.
           Source: https://github.com/Jason-sui-1120/shengji-core/commit/${GITHUB_SHA}"
-          git push origin HEAD:master
+            git push origin HEAD:master
+          } || echo "no changes to sync"
