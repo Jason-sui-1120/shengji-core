@@ -62,6 +62,7 @@ jobs:
         run: |
           if [ -z "$COMPANY_REPO_URL" ]; then
             echo "COMPANY_REPO_URL not set, skipping company sync"
+            echo "公司端请在 GitLab CI 中配置 pull-from-core 任务（见 shengji-core/scripts/gitlab-pull-core.yml）"
             exit 0
           fi
           cd /tmp/company 2>/dev/null || {

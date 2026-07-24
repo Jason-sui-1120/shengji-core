@@ -1,0 +1,32 @@
+# gitlab-pull-core.yml —— 公司 GitLab CI 任务模板
+#
+# 放到公司仓库 .gitlab-ci.yml 里，定期或手动触发：
+# 从 GitHub 拉取 shengji-core 最新版 → sync 到公司仓库 → commit + push
+#
+# 前提：GitLab runner 能访问 github.com（配置代理或白名单）
+# 需要 GitLab CI 变量：GITHUB_TOKEN（有权限读取 shengji-core 的 PAT）
+#
+# 用法（加到公司 .gitlab-ci.yml）：
+#   include:
+#     - remote: https://raw.githubusercontent.com/Jason-sui-1120/shengji-core/main/scripts/gitlab-pull-core.yml
+#
+# 或者直接复制本文件内容到公司 .gitlab-ci.yml
+
+pull_from_core:
+  stage: sync
+  image: node:22
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    - git clone --depth=1 https://x-access-token:${GITHUB_TOKEN}@github.com/Jason-sui-1120/shengji-core.git /tmp/shengji-core
+    - git config user.name "shengji-core-bot"
+    - git config user.email "bot@shengji-core"
+    - node /tmp/shengji-core/scripts/sync-core.mjs --target "$CI_PROJECT_DIR" --sync
+    - git add -A
+    - git diff --staged --quiet || {
+        git commit -m "chore: core-sync auto-sync from shengji-core";
+        git push "https://oauth2:${GITLAB_TOKEN}@git.lianjia.com/${CI_PROJECT_PATH}.git" HEAD:master;
+      } || echo "no changes to sync"
+  variables:
+    GIT_STRATEGY: clone
