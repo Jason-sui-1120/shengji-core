@@ -41,7 +41,8 @@ await createLiveAsrSession(client, new URL("ws://localhost/api/asr/live?meetingI
   resolveRequestedAsrModel: () => "test",
   getAsrUpstreamUrl: () => "ws://upstream.example.test",
   ensureMeetingSourceAudio: () => ({ scheduledBytes: 0, bytes: 0 }),
-  loadRollingResumeAudio: () => ({ pcm: Buffer.alloc(0), hasPreviousWindow: false, startMs: 0, commitEndMs: 0 }),
+  // 公司端不需要滚动恢复时允许返回空；共享会话必须自行转成标准空状态。
+  loadRollingResumeAudio: () => null,
   getLatestTranscriptId: () => 0,
   normalizeTranscriptSegment: (text) => String(text || ""),
   persistMeetingElapsedSeconds: () => {},

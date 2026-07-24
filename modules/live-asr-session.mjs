@@ -100,7 +100,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   const sessionAudioBaseSample = Math.floor(sessionAudioBaseBytes / 2);
   let receivedAudioBytes = 0;
   let pendingAudioChunkMeta = null;
-  const rollingResumeAudio = deps.loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudioBaseMs);
+  // 端侧尚未实现“跨连接滚动窗口恢复”时，必须以标准空状态启动；不能让
+  // null/undefined 在首次录音时直接打断 WebSocket 会话。
+  const rollingResumeAudio = deps.loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudioBaseMs) || {
+    pcm: Buffer.alloc(0),
+    hasPreviousWindow: false,
+    startMs: sessionAudioBaseMs,
+    commitEndMs: sessionAudioBaseMs,
+  };
   rollingAudioChunks = rollingResumeAudio.pcm.length ? [rollingResumeAudio.pcm] : [];
   rollingAudioBytes = rollingResumeAudio.pcm.length;
   rollingWindowHasOverlap = rollingResumeAudio.hasPreviousWindow;
