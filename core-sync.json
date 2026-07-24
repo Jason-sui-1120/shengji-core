@@ -1,0 +1,201 @@
+{
+  "version": "1.0.0",
+  "releasedAt": "2026-07-24",
+  "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
+  "modules": [
+    {
+      "file": "action-owner-evidence.mjs",
+      "sha256": "2a4cb7c90f5d82a9e71e86f1afc30d193cac578b764c74a7c74910d858940c92"
+    },
+    {
+      "file": "audio-utils.mjs",
+      "sha256": "478763912590736a94181edfc89f720a827d87b7749c1de20d5346a158de8854"
+    },
+    {
+      "file": "deployment.mjs",
+      "sha256": "8501f33250a2d31c88ff3e703da1e552454ff0a1d4dd347734f3e51d516f5211"
+    },
+    {
+      "file": "env.mjs",
+      "sha256": "f2647d69e465c37f1110dd62778fc14f8e9feb02c8e3db5a399fc3584c3189d3"
+    },
+    {
+      "file": "evidence-utils.mjs",
+      "sha256": "8013b094a297a4e4c6d7c804d7e3c2af8ad396c902bad86582bae753b89e1606"
+    },
+    {
+      "file": "file-segments.mjs",
+      "sha256": "1053d846be6981000a3c00c3a9baaac159fd4958d401ea376609b6d906af2f16"
+    },
+    {
+      "file": "finalize-ai-jobs.mjs",
+      "sha256": "ff897a2125a58e20a517450eef6f094af49e28a88f9f31bc0c2321f19a306d38"
+    },
+    {
+      "file": "finalize-evidence.mjs",
+      "sha256": "774cfbff6ee34c174a5683704dcac98a9d4e7f031bcf04638ffec27b87bfe641"
+    },
+    {
+      "file": "finalize-service.mjs",
+      "sha256": "e07ece59f323dd9333874d34938b89f974facd3567d7d2a00a412708e11af2b5"
+    },
+    {
+      "file": "finalize-store.mjs",
+      "sha256": "2a82c5f9396acc7674cb811d021b28cc898b09b699456c2e04596dd918004305"
+    },
+    {
+      "file": "glossary-query.mjs",
+      "sha256": "b15f3c9c9860722aa5e5999076cfafd8b7417dc2a29305f83491030e0e77275e"
+    },
+    {
+      "file": "glossary-text.mjs",
+      "sha256": "25285dcbc986d6f2a524cea0a10f0b202b2835a1ebcfd6011b3cc46347bda513"
+    },
+    {
+      "file": "glossary.mjs",
+      "sha256": "ac6279f3aa7b2910bd870e230e5f3cae5a9e95bcdfae4a858999b8030eff6c1c"
+    },
+    {
+      "file": "http-utils.mjs",
+      "sha256": "5edf9a182ff99f6080c86e12fa199c1d187ace4b2fb657523a7f851d44c737f7"
+    },
+    {
+      "file": "live-asr-helpers.mjs",
+      "sha256": "e1dfd4e100176f2796545e51b143ceb4519f2609c51b94465ca010da6067636c"
+    },
+    {
+      "file": "live-asr-session.mjs",
+      "sha256": "11d01894170bff60ca2aa97d2a8ab91959c514a9e9266d8750dd28b72199993c"
+    },
+    {
+      "file": "model-routing.mjs",
+      "sha256": "a51436529d0233e1beeae4c279b3d7c140f43b2871c324abaa252e927193978a"
+    },
+    {
+      "file": "pcm-quality.mjs",
+      "sha256": "19fa388f98fdcc4033bc285970b9d0d432e6b4a835d1b8fd79a79c8688fa5089"
+    },
+    {
+      "file": "rolling-store.mjs",
+      "sha256": "a23ca85590518179699824028801a68d1201f84de8db7dc4cfca9a8600f39638"
+    },
+    {
+      "file": "rolling-transcript-service.mjs",
+      "sha256": "8ca87bd8c2e82f1b5681e32cd7d1e2e4bd0bed5d20bd54addbd73368175e47fd"
+    },
+    {
+      "file": "rolling-window-plan.mjs",
+      "sha256": "1f157996bb4efbfb08d5024670949cef23f1a43ba5690beaff1dd18044e137d9"
+    },
+    {
+      "file": "speaker-core.mjs",
+      "sha256": "669e440f21aa8bbf254a494f469cedfe74f1d80b80fdff23d3f7c60d51144662"
+    },
+    {
+      "file": "speaker-gateway.mjs",
+      "sha256": "0abe60c20d5784a9cbaaffa6652546ef9f3b20b68b86a77db0bae544d4711561"
+    },
+    {
+      "file": "speaker-timeline.mjs",
+      "sha256": "88dd1837ac265922c2fc3e28e65aa42e4db60acc057aa79bcad34c57afe7abbe"
+    },
+    {
+      "file": "speaker-utils.mjs",
+      "sha256": "5f728b8e66496373ecf02e4c8e82791389f1957b4aa9e0e4a466d40f010dea75"
+    },
+    {
+      "file": "speakers.mjs",
+      "sha256": "72ca846e44ff66c95f75c0b2f0881358a8951fb75c0b746281af5da939a2ff75"
+    },
+    {
+      "file": "tail-stabilization.mjs",
+      "sha256": "d522a76198155e042ccd352ed53f9d51131b6257b10abefd53eb9dd241a4aebe"
+    },
+    {
+      "file": "text-utils.mjs",
+      "sha256": "0f2f9d9734071ad5a5a911e5129f6b09949dd7336a8910346e96346c1fa76d74"
+    },
+    {
+      "file": "transcript-align.mjs",
+      "sha256": "8bee9a54bbe85208bafe05005dddf42b5d3326b1a71bc070801aa99e687bb651"
+    },
+    {
+      "file": "transcript-composer.mjs",
+      "sha256": "45fa6405ba300bd032f834de397d765469a02689fdfea86383dcaa95f3858a43"
+    },
+    {
+      "file": "transcript-coverage.mjs",
+      "sha256": "43cf2c614fe54f080c1197cf08cc7f492a3ec6edf708b45ca70ac443c70005fa"
+    },
+    {
+      "file": "voice-cluster-service.mjs",
+      "sha256": "3a4970cf2890584f5ef264cd78e00997442e5fbcb454f5523d811d8877f9d80a"
+    },
+    {
+      "file": "voice-cluster-store.mjs",
+      "sha256": "3c55ab30882fa840df0448fcc36b18d7768812cc2695241ed1ef410129a0a719"
+    },
+    {
+      "file": "voice-cluster.mjs",
+      "sha256": "1d987cd2c2bd1332309834cd6829fb05ce858f0a0b428d1eddb6cbebee729e4d"
+    },
+    {
+      "file": "voice-features.mjs",
+      "sha256": "cfd6f0edeaab3883b8dfcd95a7023d13f5f5aca5c1f76c309439f52cfb0fac4a"
+    }
+  ],
+  "tests": [
+    {
+      "file": "action-owner-evidence.test.mjs",
+      "sha256": "5ae8b45f9224cf2a28a2f488c13d065bdd1f93d1d23ab2954de12f7471240e10"
+    },
+    {
+      "file": "api-contract.test.mjs",
+      "sha256": "8d1b0b9bb0e921f26952f932701937ca22ebb39dbdb6a2069e653febc5b436da"
+    },
+    {
+      "file": "config-path.test.mjs",
+      "sha256": "f4a1f845a0ae7ade262c8157540ab2261d485ef57d4d1df5c8cf91fea7277972"
+    },
+    {
+      "file": "meeting-1070-baseline.test.mjs",
+      "sha256": "c920d1c7dd5113276836718044ba2b5bf40c1cc23d97723854657f452fdf759b"
+    },
+    {
+      "file": "model-routing.test.mjs",
+      "sha256": "7f8688fa2b23119a1e19f80903abfa27e7830ca2365b7948653a40c31bc326f2"
+    },
+    {
+      "file": "rolling-service-consistency.test.mjs",
+      "sha256": "8480ac43a01a1c0bedf3fd7596b5609e07cde045744ed53b693eaf5e8e0b7ce8"
+    },
+    {
+      "file": "rolling-store-contract.test.mjs",
+      "sha256": "250ce082dc063fd2315b69f27ddc5c743ece3f710b21969547a5c00507121883"
+    },
+    {
+      "file": "rolling-window-plan.test.mjs",
+      "sha256": "cad3ccc53c6423a0c48d96b259a351e9bf8c68bc2bf89b77b865f3ea8690c70a"
+    },
+    {
+      "file": "speaker-timeline.test.mjs",
+      "sha256": "b3ae0f9a184e05015462d5a5f3c22f69cf8726417882c875cfa92533ccf4e2cc"
+    },
+    {
+      "file": "tail-stabilization.test.mjs",
+      "sha256": "35638d465a8dfa540ef0dc60c50026420be4d42e7ea06ceb277e3b57b8c66f9f"
+    },
+    {
+      "file": "transcript-composer.test.mjs",
+      "sha256": "c1d7ebace3aac9628554bcf8ea2a37494b6b7753f266d6a509ab5a39a58679a8"
+    },
+    {
+      "file": "transcript-coverage.test.mjs",
+      "sha256": "e8cf44af2975c9e3545d8a0d4e0c935e214a317ccb53503dea9b4fb457ad7aff"
+    },
+    {
+      "file": "voice-cluster.test.mjs",
+      "sha256": "3ace374ad63e9b300f59a40c6880f03598762280d36bbd0a572ad3e87c5b0d19"
+    }
+  ]
+}

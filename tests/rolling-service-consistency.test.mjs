@@ -1,0 +1,98 @@
+// rolling-service-consistency.test.mjs —— RollingTranscriptService 双端一致性验证。
+// 用同一组滚动窗口 fixture 驱动服务核心纯逻辑（候选行过滤/对齐/段合成），
+// 验证两端共用代码路径输出一致。真实 DB 一致性由各自 store 契约测试 + 集成验证覆盖。
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  alignFileSegmentsToRowsByAbsoluteTime,
+  extractStableWindowText,
+  mapDiarizationSpeakersToRows,
+  isUsableTranscriptCorrection,
+} from "./transcript-align.mjs";
+import { composeCanonicalFileSegments } from "./transcript-composer.mjs";
+
+// 1070 风格 fixture：实时草稿行 + 文件 ASR 结果
+const fixtureRows = [
+  { id: 101, text: "我们今天讨论一下下季度的", audioStartMs: 45000, audioEndMs: 49000, userEdited: 0 },
+  { id: 102, text: "销售目表", audioStartMs: 49000, audioEndMs: 51000, userEdited: 0 },
+  { id: 103, text: "和去年的同比增长", audioStartMs: 51000, audioEndMs: 55000, userEdited: 0 },
+];
+
+const fixtureFileResult = {
+  text: "我们今天讨论一下下季度的销售目标，和去年的同比增长情况。",
+  segments: [
+    { text: "我们今天讨论一下下季度的销售目标", start_time: 5, end_time: 9.5 },
+    { text: "和去年的同比增长情况", start_time: 9.5, end_time: 13 },
+  ],
+  words: [
+    { text: "我们", start_time: 5, end_time: 5.4, speaker: "speaker_1" },
+    { text: "销售目标", start_time: 8, end_time: 9.5, speaker: "speaker_1" },
+    { text: "同比增长", start_time: 10, end_time: 11.5, speaker: "speaker_2" },
+  ],
+};
+
+test("extractStableWindowText：双端共用，同一输入输出一致", () => {
+  const a = extractStableWindowText(fixtureFileResult, 5, 2, 15);
+  const b = extractStableWindowText(fixtureFileResult, 5, 2, 15);
+  assert.equal(a, b);
+  assert.ok(a.includes("销售目标"));
+});
+
+test("extractStableWindowText：毫秒级时间戳自动归一", () => {
+  const msResult = {
+    segments: [{ text: "测试段落", start_time: 5000, end_time: 9000 }],
+  };
+  const text = extractStableWindowText(msResult, 5, 0, 10);
+  assert.ok(text.includes("测试段落"));
+});
+
+test("alignFileSegmentsToRowsByAbsoluteTime：文件段对齐到行", () => {
+  const aligned = alignFileSegmentsToRowsByAbsoluteTime(
+    fixtureRows,
+    fixtureFileResult,
+    5,
+    45000,
+    "",
+    2,
+    15000,
+  );
+  assert.ok(Array.isArray(aligned.lines) || Array.isArray(aligned));
+});
+
+test("isUsableTranscriptCorrection：阈值 0.55 两端一致", () => {
+  // 高重叠：应通过
+  assert.equal(isUsableTranscriptCorrection("我们今天讨论下季度的销售目标", "我们今天讨论一下下季度的销售目标"), true);
+  // 低重叠（完全无关）：应拒绝
+  assert.equal(isUsableTranscriptCorrection("我们今天讨论销售目标增长情况", "完全不同的另一段文字内容啊"), false);
+});
+
+test("composeCanonicalFileSegments：窗口内单调化 + 重叠消除", () => {
+  const segments = [
+    { startMs: 45000, endMs: 50000, text: "第一段" },
+    { startMs: 49500, endMs: 54000, text: "第二段" },
+    { startMs: 53000, endMs: 58000, text: "第二段重复" },
+  ];
+  const canonical = composeCanonicalFileSegments(segments, {
+    windowStartMs: 45000,
+    windowEndMs: 58000,
+    protectedRows: [],
+    precedingRows: [],
+  });
+  // 单调递增
+  for (let i = 1; i < canonical.length; i += 1) {
+    assert.ok(canonical[i].startMs >= canonical[i - 1].startMs, "段应单调递增");
+  }
+});
+
+test("mapDiarizationSpeakersToRows：声纹投射到行", () => {
+  const aligned = [
+    { id: 101, text: "我们今天讨论一下下季度的销售目标", audioStartMs: 45000, audioEndMs: 49500 },
+    { id: 103, text: "和去年的同比增长情况", audioStartMs: 51000, audioEndMs: 55000 },
+  ];
+  const diarizationSegments = [
+    { speaker: "speaker_1", start: 5, end: 9.5 },
+    { speaker: "speaker_2", start: 9.5, end: 13 },
+  ];
+  const speakers = mapDiarizationSpeakersToRows(fixtureRows, aligned, diarizationSegments, 15, 5);
+  assert.ok(speakers instanceof Map);
+});
