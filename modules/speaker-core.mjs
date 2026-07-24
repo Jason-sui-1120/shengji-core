@@ -3,11 +3,11 @@
  * diarization 响应归一化、置信度/时间规范化、音频 URL 生成、AI 可用性判断。
  */
 import path from "node:path";
-import { AIT_PUBLIC_BASE_URL, AI_GATEWAY_BASE_URL } from "./config.mjs";
+import { AIT_PUBLIC_BASE_URL, AI_GATEWAY_BASE_URL, AIT_API_KEY } from "./config.mjs";
 import { normalizeSpeakerKey } from "./text-utils.mjs";
 
 export function hasAiAccess() {
-  return Boolean(AI_GATEWAY_BASE_URL || process.env.AIT_API_KEY);
+  return Boolean(AI_GATEWAY_BASE_URL || AIT_API_KEY);
 }
 
 export function normalizeDiarizationTime(value) {
