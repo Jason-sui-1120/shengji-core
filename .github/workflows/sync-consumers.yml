@@ -65,6 +65,13 @@ jobs:
             echo "公司端请在 GitLab CI 中配置 pull-from-core 任务（见 shengji-core/scripts/gitlab-pull-core.yml）"
             exit 0
           fi
+          # 检测公司 GitLab 是否可达（GitHub Actions runner 在公网，内网 GitLab 不可达）
+          COMPANY_HOST=$(echo "$COMPANY_REPO_URL" | sed -n 's|https://[^@]*@\([^/]*\)/.*|\1|p')
+          if ! timeout 5 bash -c "echo > /dev/tcp/$COMPANY_HOST/443" 2>/dev/null; then
+            echo "公司 GitLab ($COMPANY_HOST) 不可达（内网），跳过自动同步"
+            echo "公司端请在 GitLab CI 中配置 pull-from-core 任务（见 shengji-core/scripts/gitlab-pull-core.yml）"
+            exit 0
+          fi
           cd /tmp/company 2>/dev/null || {
             git clone --depth=1 "$COMPANY_REPO_URL" /tmp/company
           }
