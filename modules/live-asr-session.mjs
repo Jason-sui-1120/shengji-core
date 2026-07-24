@@ -521,8 +521,23 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       await flushTranscriptBuffer(reason, { fallbackToPartial: true });
       // 会中失败窗口可以后台退避重试；用户已点击结束后绝不能继续无界重试，
       // 否则一次文件 ASR 卡住会永久占住归档。尾段本轮限时执行，失败即走实时稿收口。
-      await triggerRollingCorrection(true);
-      const retriesResolved = failedRollingWindows.length === 0;
+      // 这里必须对“整个尾段 drain”限时，而不只是单个文件 ASR 请求限时。
+      // triggerRollingCorrection 会在 finally 中继续处理下一扇窗口；若某一扇
+      // 音频/上游调用一直不返回，之前的单窗 timeout 不能保证 sealMeeting 返回，
+      // 前端便会永久停在“尾段校准中”。超时后保留已经产出的稳定稿，并由下方
+      // forced-stable 兜底收口，完整源录音仍保留，后续可再次校准。
+      let tailDrainCompleted = true;
+      try {
+        await withTimeout(
+          triggerRollingCorrection(true),
+          config.TAIL_STABILIZATION_TIMEOUT_MS,
+          "tail_stabilization_total",
+        );
+      } catch (error) {
+        tailDrainCompleted = false;
+        console.error(`[seal] tail stabilization timed out meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const retriesResolved = tailDrainCompleted && failedRollingWindows.length === 0;
       // 等待正在运行的 rolling correction 完成，避免 draftCount 统计不准
       if (rollingCorrectionRunning || rollingRetryRunning) {
         // sealMeeting 自身就是一个进行中的任务。这里只等待并行的滚动校准/重试，
