@@ -65,7 +65,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "6b170cb34bcd2b0cb2e3eaba4b22b558803a92eb60d33ebc55d5210043212c99"
+      "sha256": "abc78eaf5e5080db649c1b8ccf7abac352725a1dbcab3e18f31c1b6b6c9e9a68"
     },
     {
       "file": "model-routing.mjs",

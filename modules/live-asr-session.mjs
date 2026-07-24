@@ -21,6 +21,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     ASR_INCOMPLETE_MERGE_DELAY_MS: 1_500,
     LIVE_DRAFT_LLM_CORRECTION: false,
     LIVE_SPEAKER_IDENTIFY_INTERVAL_MS: 12_000,
+    ROLLING_ASR_TIMEOUT_MS: 90_000,
+    TAIL_STABILIZATION_TIMEOUT_MS: 60_000,
+    POST_MEETING_SPEAKER_TIMEOUT_MS: 15_000,
     ...deps.config,
   };
   if (!WebSocket || !Buffer || !randomUUID || !meetingLiveConnections) {
@@ -121,6 +124,19 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   function safeSend(payload) {
     if (client.readyState !== WebSocket.OPEN) return;
     try { client.send(JSON.stringify(payload)); } catch { /* client gone */ }
+  }
+
+  function withTimeout(promise, timeoutMs, label) {
+    const ms = Math.max(1_000, Number(timeoutMs || 0));
+    let timer = null;
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
   }
 
   safeSend({ type: "status", status: "connecting", model });
@@ -503,8 +519,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     deps.beginMeetingAiJob(meetingId);
     sealingPromise = (async () => {
       await flushTranscriptBuffer(reason, { fallbackToPartial: true });
+      // 会中失败窗口可以后台退避重试；用户已点击结束后绝不能继续无界重试，
+      // 否则一次文件 ASR 卡住会永久占住归档。尾段本轮限时执行，失败即走实时稿收口。
       await triggerRollingCorrection(true);
-      const retriesResolved = await retryFailedRollingWindows(true);
+      const retriesResolved = failedRollingWindows.length === 0;
       // 等待正在运行的 rolling correction 完成，避免 draftCount 统计不准
       if (rollingCorrectionRunning || rollingRetryRunning) {
         // sealMeeting 自身就是一个进行中的任务。这里只等待并行的滚动校准/重试，
@@ -515,7 +533,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // 完整录音封存后再做一次会议级说话人校准。它不影响文字稳定化，但
       // 最终纪要必须使用这次校准后的说话人轨道，而不是窗口临时标签。
       try {
-        const speakerResult = await deps.reconcileMeetingSpeakersFromSourceAudio(meetingId);
+        const speakerResult = await withTimeout(
+          deps.reconcileMeetingSpeakersFromSourceAudio(meetingId),
+          config.POST_MEETING_SPEAKER_TIMEOUT_MS,
+          "post_meeting_speaker",
+        );
         if (!speakerResult.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult.reason || "unknown"}`);
       } catch (error) {
         console.error(`[post-meeting-speaker] failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -677,7 +699,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const submittedDurationSeconds = Number((pcm.length / (16000 * 2)).toFixed(1));
       console.log(`[rolling-asr] submitting meeting=${meetingId} duration=${submittedDurationSeconds}s start=${correctionStartId} end=${correctionEndId}`);
       safeSend({ type: "status", status: "rolling_correction", model: deps.config.ROLLING_ASR_MODEL, submittedDurationSeconds });
-      const result = await deps.performRollingTranscriptCorrection({
+      const correctionPromise = deps.performRollingTranscriptCorrection({
         meetingId,
         pcm,
         startTranscriptId: correctionStartId,
@@ -693,6 +715,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         forcedBoundary: plan.forcedBoundary,
         allowBoundaryRows: Boolean(isFinal),
       });
+      const result = await withTimeout(
+        correctionPromise,
+        isFinal ? config.TAIL_STABILIZATION_TIMEOUT_MS : config.ROLLING_ASR_TIMEOUT_MS,
+        isFinal ? "tail_stabilization" : "rolling_correction",
+      );
       rollingStartTranscriptId = Math.max(rollingStartTranscriptId, Number(result.lastProcessedTranscriptId || correctionStartId));
       rollingWindowHasOverlap = true;
       const pendingAudio = Buffer.concat(rollingAudioChunks);
