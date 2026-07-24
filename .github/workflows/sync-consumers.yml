@@ -39,9 +39,14 @@ jobs:
             echo "PUBLIC_REPO_TOKEN not set, skipping public sync"
             exit 0
           fi
-          git clone --depth=1 https://x-access-token:${PUBLIC_TOKEN}@github.com/Jason-sui-1120/shengji-voice-recorder.git /tmp/public
-          node scripts/sync-core.mjs --target /tmp/public --sync
+          cd /tmp/public 2>/dev/null || {
+            git clone --depth=1 https://x-access-token:${PUBLIC_TOKEN}@github.com/Jason-sui-1120/shengji-voice-recorder.git /tmp/public
+          }
           cd /tmp/public
+          git config user.name "shengji-core-bot"
+          git config user.email "bot@shengji-core"
+          git remote set-url origin "https://x-access-token:${PUBLIC_TOKEN}@github.com/Jason-sui-1120/shengji-voice-recorder.git"
+          node "$GITHUB_WORKSPACE/scripts/sync-core.mjs" --target /tmp/public --sync
           git add -A
           git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
 
@@ -57,9 +62,13 @@ jobs:
             echo "COMPANY_REPO_URL not set, skipping company sync"
             exit 0
           fi
-          git clone --depth=1 "$COMPANY_REPO_URL" /tmp/company
-          node scripts/sync-core.mjs --target /tmp/company --sync
+          cd /tmp/company 2>/dev/null || {
+            git clone --depth=1 "$COMPANY_REPO_URL" /tmp/company
+          }
           cd /tmp/company
+          git config user.name "shengji-core-bot"
+          git config user.email "bot@shengji-core"
+          node "$GITHUB_WORKSPACE/scripts/sync-core.mjs" --target /tmp/company --sync
           git add -A
           git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
 
