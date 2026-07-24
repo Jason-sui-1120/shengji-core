@@ -1,5 +1,5 @@
 {
-  "version": "1.1.2",
+  "version": "1.1.3",
   "releasedAt": "2026-07-24",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -65,7 +65,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "c4c86b353caafa6fd2cea7bcb10b3bfa6104510247437658b3fbb8b097f3724f"
+      "sha256": "ff926f853cd64163312f65723bbcd740d737515724dc50528509d044bf225657"
     },
     {
       "file": "model-routing.mjs",
@@ -162,6 +162,10 @@
       "sha256": "c925f5edf8072d46d50e2b9f71b40ef14350b5bbde6f9be3aa68ab0432b5a217"
     },
     {
+      "file": "live-asr-session.test.mjs",
+      "sha256": "cc462552d50cfb24ec61603cf7976d282436c6e066d9b4c86d41037d1a91d3cb"
+    },
+    {
       "file": "meeting-1070-baseline.test.mjs",
       "sha256": "c920d1c7dd5113276836718044ba2b5bf40c1cc23d97723854657f452fdf759b"
     },
@@ -200,10 +204,6 @@
     {
       "file": "voice-cluster.test.mjs",
       "sha256": "3ace374ad63e9b300f59a40c6880f03598762280d36bbd0a572ad3e87c5b0d19"
-    },
-    {
-      "file": "live-asr-session.test.mjs",
-      "sha256": "cc462552d50cfb24ec61603cf7976d282436c6e066d9b4c86d41037d1a91d3cb"
     }
   ]
 }

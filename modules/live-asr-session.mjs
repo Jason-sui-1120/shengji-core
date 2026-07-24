@@ -215,8 +215,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         payload.max_sentence_silence = config.ASR_UPSTREAM_MAX_SENTENCE_SILENCE;
         payload.enable_semantic_sentence_detection = true;
       }
-      // 传 hotword 参数给 ASR（FunASR/Bella 支持）
-      if (hotwordText) {
+      // 传 hotword 参数给 ASR（FunASR/Bella 支持；AIT 直连基础模型不支持，会导致
+      // StartTranscription 后立即断开，与 ASR_ENABLE_ADVANCED_PAYLOAD 一起控制）
+      if (config.ASR_ENABLE_ADVANCED_PAYLOAD !== false && hotwordText) {
         payload.hotword = hotwordText;
       }
       current.send(JSON.stringify({
