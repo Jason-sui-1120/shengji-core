@@ -151,10 +151,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
   function connectUpstream() {
     if (upstreamStopped || client.readyState !== WebSocket.OPEN) return;
-    const current = new WebSocket(upstreamUrl, {
-      handshakeTimeout: 5000,
-      perMessageDeflate: false,
-    });
+    // AIT 直连与公网网关对 WebSocket 握手选项的兼容性不同；公司端沿用已
+    // 验证的无附加参数构造方式，公网网关仍可使用显式超时和压缩关闭。
+    const current = config.ASR_USE_WS_OPTIONS === false
+      ? new WebSocket(upstreamUrl)
+      : new WebSocket(upstreamUrl, { handshakeTimeout: 5000, perMessageDeflate: false });
     // WS 心跳：每 20s 发 ping，超时 20s 未 pong 则认为连接死掉
     current.on("ping", () => { try { current.pong(); } catch { /* gone */ } });
     current._pingTimer = setInterval(() => {
@@ -183,13 +184,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         enable_intermediate_result: true,
         enable_punctuation_prediction: true,
         enable_inverse_text_normalization: true,
-        // ASR 层过滤语气词（声音顺滑），减少"嗯""啊"等 filler
-        disfluency: true,
-        // VAD 断句静音阈值，默认放宽，减少半句话和短碎片。
-        max_sentence_silence: config.ASR_UPSTREAM_MAX_SENTENCE_SILENCE,
-        // 语义断句，改善长句切分
-        enable_semantic_sentence_detection: true,
       };
+      // 某些 AIT 直连流式模型只接受基础字段；扩展字段由端侧显式开启，避免
+      // 服务器因参数不认识而在 StartTranscription 后立即关闭连接。
+      if (config.ASR_ENABLE_ADVANCED_PAYLOAD !== false) {
+        payload.disfluency = true;
+        payload.max_sentence_silence = config.ASR_UPSTREAM_MAX_SENTENCE_SILENCE;
+        payload.enable_semantic_sentence_detection = true;
+      }
       // 传 hotword 参数给 ASR（FunASR/Bella 支持）
       if (hotwordText) {
         payload.hotword = hotwordText;
