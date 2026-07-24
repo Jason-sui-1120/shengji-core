@@ -1,0 +1,68 @@
+name: Sync to consumer repos
+
+# shengji-core push 到 main 后，自动：
+# 1. sync 共享模块到公网仓库（shengji-voice-recorder）
+# 2. sync 共享模块到公司仓库（shengji-lianjia）
+# 3. 两端各创建一个同步提交并推送
+# 4. 公网端 push 会自动触发其 CI + Deploy
+# 5. 公司端 push 会自动触发其 GitLab CI（如果配置了镜像）
+#
+# 需要 GitHub Secrets:
+#   PUBLIC_REPO_TOKEN  —— 有权 push 到 Jason-sui-1120/shengji-voice-recorder 的 PAT
+#   COMPANY_REPO_URL   —— 公司仓库的 Git URL（含认证，如 https://token@gitlab.com/...）
+#
+# 注意：如果公司仓库在 GitLab（非 GitHub），则需要 COMPANY_REPO_URL 包含认证信息。
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-to-consumers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout shengji-core
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sync to public repo
+        env:
+          PUBLIC_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+        run: |
+          if [ -z "$PUBLIC_TOKEN" ]; then
+            echo "PUBLIC_REPO_TOKEN not set, skipping public sync"
+            exit 0
+          fi
+          git clone --depth=1 https://x-access-token:${PUBLIC_TOKEN}@github.com/Jason-sui-1120/shengji-voice-recorder.git /tmp/public
+          node scripts/sync-core.mjs --target /tmp/public --sync
+          cd /tmp/public
+          git add -A
+          git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
+
+          Auto-synced by shengji-core CI. Do not edit directly.
+          Source: https://github.com/Jason-sui-1120/shengji-core/commit/${GITHUB_SHA}"
+          git push origin main
+
+      - name: Sync to company repo
+        env:
+          COMPANY_REPO_URL: ${{ secrets.COMPANY_REPO_URL }}
+        run: |
+          if [ -z "$COMPANY_REPO_URL" ]; then
+            echo "COMPANY_REPO_URL not set, skipping company sync"
+            exit 0
+          fi
+          git clone --depth=1 "$COMPANY_REPO_URL" /tmp/company
+          node scripts/sync-core.mjs --target /tmp/company --sync
+          cd /tmp/company
+          git add -A
+          git commit -m "chore: core-sync auto-sync from shengji-core@${GITHUB_SHA::7}
+
+          Auto-synced by shengji-core CI. Do not edit directly.
+          Source: https://github.com/Jason-sui-1120/shengji-core/commit/${GITHUB_SHA}"
+          git push origin HEAD:master
