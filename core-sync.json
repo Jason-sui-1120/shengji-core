@@ -65,7 +65,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "11d01894170bff60ca2aa97d2a8ab91959c514a9e9266d8750dd28b72199993c"
+      "sha256": "f68597850f4dd4f62b0c9b5e0a52ed47d390a3adcea4e0f9427250aaabd1c915"
     },
     {
       "file": "model-routing.mjs",
@@ -200,6 +200,10 @@
     {
       "file": "voice-cluster.test.mjs",
       "sha256": "3ace374ad63e9b300f59a40c6880f03598762280d36bbd0a572ad3e87c5b0d19"
+    },
+    {
+      "file": "live-asr-session.test.mjs",
+      "sha256": "e98810c96a91cbc65006f39c04a6e2c1db7941fea61bf1d7c855119283b2edd2"
     }
   ]
 }

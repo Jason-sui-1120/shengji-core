@@ -6,7 +6,26 @@
  * 通过 deps 注入端侧差异（DB 方言/鉴权/配置/存储），业务逻辑两端统一。
  */
 
-export function createLiveAsrSession(client, clientUrl, deps) {
+export async function createLiveAsrSession(client, clientUrl, deps) {
+  // 这个模块同时运行在 SQLite 公网端和 MySQL 公司端，不能再隐式读取宿主
+  // index.mjs 的全局变量。所有 Node 运行时对象和端侧状态都必须显式注入。
+  const WebSocket = deps.WebSocket;
+  const Buffer = deps.Buffer;
+  const randomUUID = deps.randomUUID;
+  const meetingLiveConnections = deps.meetingConnections;
+  const config = {
+    ASR_UPSTREAM_MAX_SENTENCE_SILENCE: 1_200,
+    ASR_PENDING_AUDIO_MAX_BYTES: 4 * 1024 * 1024,
+    ASR_FINAL_STABILITY_DELAY_MS: 400,
+    ASR_SHORT_MERGE_DELAY_MS: 900,
+    ASR_INCOMPLETE_MERGE_DELAY_MS: 1_500,
+    LIVE_DRAFT_LLM_CORRECTION: false,
+    LIVE_SPEAKER_IDENTIFY_INTERVAL_MS: 12_000,
+    ...deps.config,
+  };
+  if (!WebSocket || !Buffer || !randomUUID || !meetingLiveConnections) {
+    throw new Error("live_asr_runtime_dependencies_missing");
+  }
   if (!deps.hasAiAccess()) {
     client.send(JSON.stringify({ type: "error", message: "AI gateway or AIT_API_KEY is not configured" }));
     client.close(1011, "missing api key");
@@ -14,8 +33,9 @@ export function createLiveAsrSession(client, clientUrl, deps) {
   }
 
   const meetingId = Number(clientUrl.searchParams.get("meetingId") || 1);
-  const liveMeeting = deps.getMeetingLiveRecord(meetingId);
-  if (!liveMeeting || liveMeeting.deletedAt || ["finalized", "archived"].includes(String(liveMeeting.status || "").toLowerCase()) || deps.getFinalizedMeetingByMeetingId(meetingId)) {
+  const liveMeeting = await deps.getMeetingLiveRecord(meetingId);
+  const finalizedMeeting = await deps.getFinalizedMeetingByMeetingId(meetingId);
+  if (!liveMeeting || liveMeeting.deletedAt || ["finalized", "archived"].includes(String(liveMeeting.status || "").toLowerCase()) || finalizedMeeting) {
     client.send(JSON.stringify({ type: "error", message: "会议已归档或已删除，不能继续建立实时转写连接" }));
     client.close(1008, "meeting archived or deleted");
     return;
@@ -166,7 +186,7 @@ export function createLiveAsrSession(client, clientUrl, deps) {
         // ASR 层过滤语气词（声音顺滑），减少"嗯""啊"等 filler
         disfluency: true,
         // VAD 断句静音阈值，默认放宽，减少半句话和短碎片。
-        max_sentence_silence: ASR_UPSTREAM_MAX_SENTENCE_SILENCE,
+        max_sentence_silence: config.ASR_UPSTREAM_MAX_SENTENCE_SILENCE,
         // 语义断句，改善长句切分
         enable_semantic_sentence_detection: true,
       };
@@ -425,7 +445,7 @@ export function createLiveAsrSession(client, clientUrl, deps) {
       lastAudioSentAt = Date.now();
       return;
     }
-    if (pendingAudioBytes + chunk.length <= ASR_PENDING_AUDIO_MAX_BYTES) {
+    if (pendingAudioBytes + chunk.length <= config.ASR_PENDING_AUDIO_MAX_BYTES) {
       pendingAudioChunks.push(chunk);
       pendingAudioBytes += chunk.length;
     } else {
@@ -491,13 +511,13 @@ export function createLiveAsrSession(client, clientUrl, deps) {
       } catch (error) {
         console.error(`[post-meeting-speaker] failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const draftCount = countDraftTranscripts(meetingId);
+      const draftCount = await countDraftTranscripts(meetingId);
       const hasPendingRollingRetry = failedRollingWindows.some((window) => Number(window.attempt || 0) < deps.config.ROLLING_ASR_MAX_RETRIES);
       // 文件校准可能因边界/低置信度而没有可重试窗口，但仍留下少量 draft。
       // 此时不能永久停在 sealed_pending_correction；在所有校准任务已收口后，
       // 按既定兜底策略把残留稿标记为 forced stable，保证会议可归档可回放。
       if (draftCount > 0 && !hasPendingRollingRetry && !rollingCorrectionRunning && !rollingRetryRunning) {
-        const forced = forceStabilizeDraftTranscripts(meetingId);
+        const forced = await forceStabilizeDraftTranscripts(meetingId);
         if (forced > 0) {
           safeSend({ type: "status", status: "sealed", forcedStableCount: forced, message: `已强制收口 ${forced} 条未校准转写` });
           return;
@@ -507,7 +527,7 @@ export function createLiveAsrSession(client, clientUrl, deps) {
         // 用户明确结束会议后，不能让失败的尾段重试永久占住归档入口。
         // 文件 ASR 的后台重试只适合会中窗口；会后立即以现有实时稿收口，
         // 同时保留完整录音供回听和后续修复，最终纪要永远有可用输入。
-        const forced = forceStabilizeDraftTranscripts(meetingId);
+        const forced = await forceStabilizeDraftTranscripts(meetingId);
         safeSend({
           type: "status",
           status: "sealed",
@@ -523,7 +543,10 @@ export function createLiveAsrSession(client, clientUrl, deps) {
     return sealingPromise;
   }
 
-  function countDraftTranscripts(meetingIdParam) {
+  async function countDraftTranscripts(meetingIdParam) {
+    if (typeof deps.countDraftTranscripts === "function") {
+      return Number(await deps.countDraftTranscripts(meetingIdParam)) || 0;
+    }
     try {
       const db = deps.openDb();
       const draftCount = db.prepare(
@@ -537,7 +560,10 @@ export function createLiveAsrSession(client, clientUrl, deps) {
     }
   }
 
-  function forceStabilizeDraftTranscripts(meetingIdParam) {
+  async function forceStabilizeDraftTranscripts(meetingIdParam) {
+    if (typeof deps.forceStabilizeDraftTranscripts === "function") {
+      return Number(await deps.forceStabilizeDraftTranscripts(meetingIdParam)) || 0;
+    }
     try {
       const db = deps.openDb();
       const draftRows = db.prepare(`
@@ -815,12 +841,12 @@ export function createLiveAsrSession(client, clientUrl, deps) {
 
   function getTranscriptFlushDelay(reason = "endpoint") {
     if (["stop", "client_close", "upstream_close", "max_text", "max_duration"].includes(reason)) {
-      return Math.max(0, ASR_FINAL_STABILITY_DELAY_MS);
+      return Math.max(0, config.ASR_FINAL_STABILITY_DELAY_MS);
     }
     const candidate = deps.normalizeTranscriptSegment(transcriptBuffer || latestPartial);
-    if (deps.shouldWaitForMoreSpeech(candidate)) return Math.max(ASR_SHORT_MERGE_DELAY_MS, ASR_FINAL_STABILITY_DELAY_MS);
-    if (deps.looksSemanticallyIncomplete(candidate)) return Math.max(ASR_INCOMPLETE_MERGE_DELAY_MS, ASR_FINAL_STABILITY_DELAY_MS);
-    return Math.max(0, ASR_FINAL_STABILITY_DELAY_MS);
+    if (deps.shouldWaitForMoreSpeech(candidate)) return Math.max(config.ASR_SHORT_MERGE_DELAY_MS, config.ASR_FINAL_STABILITY_DELAY_MS);
+    if (deps.looksSemanticallyIncomplete(candidate)) return Math.max(config.ASR_INCOMPLETE_MERGE_DELAY_MS, config.ASR_FINAL_STABILITY_DELAY_MS);
+    return Math.max(0, config.ASR_FINAL_STABILITY_DELAY_MS);
   }
 
   function pushTranscriptSegment(text, timing = {}) {
@@ -949,10 +975,10 @@ export function createLiveAsrSession(client, clientUrl, deps) {
 
     // 逐句 LLM 纠错和说话人分离会与稳定校准重复。声纹仅低频采样，保留最近可靠说话人作草稿标注。
     const textCompact = text.replace(/\s/g, "");
-    const shouldRunLiveCorrection = textCompact.length >= 10 && (!deps.config.ROLLING_ASR_ENABLED || LIVE_DRAFT_LLM_CORRECTION);
+    const shouldRunLiveCorrection = textCompact.length >= 10 && (!config.ROLLING_ASR_ENABLED || config.LIVE_DRAFT_LLM_CORRECTION);
     const shouldIdentifySpeaker = Boolean(wav?.length)
       && Number(quality.durationMs || 0) >= 1200
-      && (!deps.config.ROLLING_ASR_ENABLED || Date.now() - lastSpeakerIdentifyAt >= LIVE_SPEAKER_IDENTIFY_INTERVAL_MS);
+      && (!config.ROLLING_ASR_ENABLED || Date.now() - lastSpeakerIdentifyAt >= config.LIVE_SPEAKER_IDENTIFY_INTERVAL_MS);
     const shouldRunDiarization = !deps.config.ROLLING_ASR_ENABLED && textCompact.length >= 10;
     if (shouldIdentifySpeaker) lastSpeakerIdentifyAt = Date.now();
 
@@ -1057,4 +1083,3 @@ export function createLiveAsrSession(client, clientUrl, deps) {
     }, 500);
   }
 }
-
