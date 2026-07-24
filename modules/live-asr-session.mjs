@@ -519,6 +519,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     deps.beginMeetingAiJob(meetingId);
     sealingPromise = (async () => {
       await flushTranscriptBuffer(reason, { fallbackToPartial: true });
+      // 在真正开始尾段文件 ASR 前先持久化中间状态。这样即使 WebSocket、Pod
+      // 或上游请求在中途失联，服务端门禁也能识别为“待收口”并走超时兜底；
+      // 不能一直停留在 recording，导致当前这场会议没有可恢复的状态。
+      try {
+        await deps.markMeetingSourceAudioStabilizing?.(meetingId);
+      } catch (error) {
+        console.error(`[seal] mark tail stabilizing failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
       // 会中失败窗口可以后台退避重试；用户已点击结束后绝不能继续无界重试，
       // 否则一次文件 ASR 卡住会永久占住归档。尾段本轮限时执行，失败即走实时稿收口。
       // 这里必须对“整个尾段 drain”限时，而不只是单个文件 ASR 请求限时。
