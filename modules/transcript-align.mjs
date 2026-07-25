@@ -4,6 +4,7 @@
  * 全部为无 DB 依赖的纯函数。
  */
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
+import { normalizeForTranscriptCompare } from "./evidence-utils.mjs";
 import { getAbsoluteFileSegments, getCharOverlapRatio, getFileTimestampScale, normalizeFileTimestamp } from "./file-segments.mjs";
 import { normalizeConfidence } from "./speaker-core.mjs";
 

@@ -1,5 +1,5 @@
 {
-  "version": "1.1.5",
+  "version": "1.1.6",
   "releasedAt": "2026-07-25",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -117,7 +117,7 @@
     },
     {
       "file": "transcript-align.mjs",
-      "sha256": "8bee9a54bbe85208bafe05005dddf42b5d3326b1a71bc070801aa99e687bb651"
+      "sha256": "1adc0545e29b4427b6ccb4723f8034d58291870803c2c5d3960a7fd761692460"
     },
     {
       "file": "transcript-composer.mjs",
