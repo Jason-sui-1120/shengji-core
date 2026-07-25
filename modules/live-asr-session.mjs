@@ -112,7 +112,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let pendingAudioChunkMeta = null;
   // 端侧尚未实现“跨连接滚动窗口恢复”时，必须以标准空状态启动；不能让
   // null/undefined 在首次录音时直接打断 WebSocket 会话。
-  const rollingResumeAudio = deps.loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudioBaseMs) || {
+  // 公司端实现是 async（要查 MySQL asr_window_runs）；await 对公网同步实现同样安全。
+  const rollingResumeAudio = (await deps.loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudioBaseMs)) || {
     pcm: Buffer.alloc(0),
     hasPreviousWindow: false,
     startMs: sessionAudioBaseMs,
