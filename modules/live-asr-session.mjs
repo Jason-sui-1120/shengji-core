@@ -37,6 +37,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return;
   }
 
+  // 初始化期间（多次异步 DB 查询）到达的音频帧不能丢：先挂缓冲 handler，
+  // init 完成后由主 handler 接管并回放。此前 handler 在 await 之后才注册，
+  // MySQL 端 init 较慢时首帧丢失会导致 meta/帧错位、整段录音被判 gap 拒绝。
+  // 初始化期间（多次异步 DB 查询）到达的音频帧不能丢：全部进有序队列，
+  // init 完成后先回放队列再放行实时帧。此前 handler 在 await 之后才注册，
+  // MySQL 端 init 较慢时首帧丢失会导致 meta/帧错位、整段录音被判 gap 拒绝。
+  const preInitFrames = [];
+  let replayDone = false;
+  client.on("message", (data, isBinary) => {
+    if (!replayDone) preInitFrames.push([data, isBinary]);
+  });
+
   const meetingId = Number(clientUrl.searchParams.get("meetingId") || 1);
   const liveMeeting = await deps.getMeetingLiveRecord(meetingId);
   const finalizedMeeting = await deps.getFinalizedMeetingByMeetingId(meetingId);
@@ -342,7 +354,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     }, delay);
   }
 
-  client.on("message", async (data, isBinary) => {
+  const processClientMessage = async (data, isBinary) => {
     if (!isBinary) {
       const text = String(data);
       let control = null;
@@ -436,15 +448,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         }
         chunk = chunk.subarray(duplicateSamples * 2);
       } else if (chunkMeta.startSample > expectedStartSample) {
+        // 丢帧/首帧竞态导致的错位不能永久拒绝整段录音：记录并向前对齐，
+        // 缺口由 rolling 文件 ASR 从源音频补齐（源音频同位置也会缺，语义一致）。
+        console.error(`[source-audio] gap resync meeting=${meetingId} expected=${expectedStartSample} received=${chunkMeta.startSample}`);
         safeSend({
           type: "status",
-          status: "source_audio_chunk_rejected",
-          reason: "audio_gap",
+          status: "source_audio_gap_resync",
           expectedSample: expectedStartSample,
           receivedSample: chunkMeta.startSample,
-          sequence: chunkMeta.sequence,
         });
-        return;
+        const gapBytes = Math.max(0, (chunkMeta.startSample - expectedStartSample) * 2);
+        if (gapBytes > 0 && gapBytes <= 16000 * 2 * 600) {
+          // 源音频按样本序号定位，缺口必须填等量静音，否则后续时间轴整体漂移。
+          void deps.appendMeetingSourceAudio(meetingId, Buffer.alloc(gapBytes)).catch(() => {});
+        }
+        receivedAudioBytes = Math.max(0, (chunkMeta.startSample - sessionAudioBaseSample) * 2);
       }
     }
     const acceptedSequence = chunkMeta?.sequence;
@@ -492,7 +510,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         message: "实时 ASR 中断时间过长，完整录音仍已保存，将由文件 ASR 补齐",
       });
     }
-  });
+  };
+  // 先回放 init 期间的缓冲帧，再放行实时帧；回放期间新到的帧继续入队，最后统一处理。
+  client.on("message", (data, isBinary) => { void processClientMessage(data, isBinary); });
+  for (const [data, isBinary] of preInitFrames.splice(0)) await processClientMessage(data, isBinary);
+  replayDone = true;
+  while (preInitFrames.length) {
+    const [data, isBinary] = preInitFrames.shift();
+    void processClientMessage(data, isBinary);
+  }
 
   client.on("close", () => {
     clearInterval(clientPingTimer);
