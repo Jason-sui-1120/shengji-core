@@ -32,10 +32,26 @@ function loadEnv(filePath) {
 
 loadEnv(path.join(rootDir, ".env.local"));
 
-// 共享模型配置：models.json 优先级低于 .env.local，高于硬编码默认值
+// 共享模型配置：models.json 由 git 管理、两端同步，是模型选择的权威来源。
+// 构建产物从 dist/server 启动时 rootDir 是 dist/，models.json 在仓库根目录，
+// 与 config.json 一样需要向上查找，否则部署环境会静默回退到硬编码默认模型。
+function findModelsFile() {
+  let directory = rootDir;
+  for (let depth = 0; depth < 5; depth += 1) {
+    const candidate = path.join(directory, "models.json");
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return "";
+}
+
 function loadModelsConfig() {
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(rootDir, "models.json"), "utf8"));
+    const filePath = findModelsFile();
+    if (!filePath) return {};
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
     const result = {};
     for (const [k, v] of Object.entries(raw)) {
       if (!k.startsWith("_")) result[k] = v;
@@ -47,6 +63,11 @@ function loadModelsConfig() {
 }
 
 const modelsConfig = loadModelsConfig();
+
+// 仅读取 models.json 的值（不看环境变量），供 config.mjs 实现"models.json 权威"的模型键。
+export function modelsConfigValue(key) {
+  return modelsConfig[key];
+}
 
 export function modelConfig(key, fallback) {
   if (process.env[key] !== undefined) return process.env[key];
