@@ -52,6 +52,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return;
   }
   meetingLiveConnections.set(meetingId, client);
+  // server→client 心跳：浏览器收到 WS ping 会自动回 pong。音频暂停（静音/后台标签页）
+  // 时仍有双向流量，防止公司入口网关/nginx 因空闲超时切断长连接（公网 nginx 同理）。
+  const clientPingTimer = setInterval(() => {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.ping(); } catch { /* gone */ }
+    }
+  }, 25_000);
   const requestedModel = clientUrl.searchParams.get("model") || "";
   const model = deps.resolveRequestedAsrModel(requestedModel, deps.config.AIT_ASR_MODEL);
   const upstreamUrl = deps.getAsrUpstreamUrl(model);
@@ -485,6 +492,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   });
 
   client.on("close", () => {
+    clearInterval(clientPingTimer);
     // 清理连接锁，允许后续重连
     if (meetingLiveConnections.get(meetingId) === client) meetingLiveConnections.delete(meetingId);
     if (transcriptFlushTimer) {
@@ -1116,6 +1124,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   }
 
   function stopUpstream() {
+    clearInterval(clientPingTimer);
     upstreamStopped = true;
     if (upstreamReconnectTimer) {
       clearTimeout(upstreamReconnectTimer);
