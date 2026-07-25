@@ -118,7 +118,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   // commitCursor 是唯一的“下一段待归属”边界。它只由源音频/VAD 窗口计划推进，
   // 绝不能由文件 ASR 返回的（可能压缩静音的）时间戳推进。
   let rollingCommitCursorMs = rollingResumeAudio.commitEndMs;
-  let rollingStartTranscriptId = deps.getLatestTranscriptId(meetingId);
+  // deps.getLatestTranscriptId 允许是 async（公司端 MySQL）；await 对同步实现同样安全。
+  let rollingStartTranscriptId = await deps.getLatestTranscriptId(meetingId);
   connectUpstream();
 
   function safeSend(payload) {
@@ -499,7 +500,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     try {
       await flushTranscriptBuffer("client_close", { fallbackToPartial: true });
       const sourceBytes = sessionAudioBaseBytes + receivedAudioBytes;
-      deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2));
+      void Promise.resolve(deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2))).catch(() => {});
       await deps.checkpointMeetingSourceAudio(meetingId, "partial");
     } catch (error) {
       console.error(`[pause] checkpoint failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
@@ -513,7 +514,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 后续稳定化/下一次状态写入补齐。
     try {
       const sourceBytes = sessionAudioBaseBytes + receivedAudioBytes;
-      deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2));
+      void Promise.resolve(deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2))).catch(() => {});
     } catch (error) {
       console.error(`[seal] persist elapsed failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
     }
@@ -715,7 +716,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const windowEndAudioMs = windowStartAudioMs + windowDurationMs;
     try {
       if (!isFinal) await flushTranscriptBuffer("rolling_window", { fallbackToPartial: true });
-      const currentEndTranscriptId = deps.getLatestTranscriptId(meetingId);
+      const currentEndTranscriptId = await deps.getLatestTranscriptId(meetingId);
       correctionStartId = rollingStartTranscriptId;
       correctionEndId = currentEndTranscriptId;
       // 本次窗口已经同步移走；处理期间新来的音频只会追加到当前缓冲，
@@ -1085,7 +1086,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const insertedLines = [];
     try {
       for (const draft of timelineLineDrafts) {
-        insertedLines.push(deps.insertTranscript({
+        // 必须 await：公司端 insertTranscript 是 async，直接 push Promise 会让
+        // transcript.final 序列化成空对象（前端空行）且 stabilityStatus 判断失效。
+        insertedLines.push(await deps.insertTranscript({
           ...draft,
           rawText: rawAsrText,
           correctionApplied,

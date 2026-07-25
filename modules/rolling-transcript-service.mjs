@@ -71,6 +71,8 @@ export class RollingTranscriptService {
     const requestDurationSeconds = pcm.length / (16000 * 2);
     const fileName = `meeting-${Number(meetingId || 1)}-rolling-${Date.now()}-${randomUUID().slice(0, 8)}.wav`;
     const audioPath = path.join(audioDir, fileName);
+    // 公司端部署不会预建 audio 目录（源音频走 tmpdir 缓存），写滚动 WAV 前必须确保目录存在。
+    fs.mkdirSync(path.dirname(audioPath), { recursive: true });
     fs.writeFileSync(audioPath, wav);
 
     let hotwordText = "";
