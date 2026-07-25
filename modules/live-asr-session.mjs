@@ -758,6 +758,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const windowStartAudioMs = plan.requestStartMs;
     const windowDurationMs = Math.round(durationSeconds * 1000);
     const windowEndAudioMs = windowStartAudioMs + windowDurationMs;
+    const rollingCommitCursorBeforeCorrection = rollingCommitCursorMs;
     try {
       if (!isFinal) await flushTranscriptBuffer("rolling_window", { fallbackToPartial: true });
       const currentEndTranscriptId = await deps.getLatestTranscriptId(meetingId);
@@ -793,7 +794,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       rollingWindowHasOverlap = true;
       const pendingAudio = Buffer.concat(rollingAudioChunks);
       const commitEndAudioMs = plan.commitEndMs;
-      const nextRequestStartMs = Math.max(windowStartAudioMs, deps.findRollingContextStart({
+      // 长发言没有句子边界时，findRollingContextStart 会回落到 0，
+      // 必须钳制在 commitEnd - maxLookback 以内，否则窗口每次都从 0 重新
+      // 提交、越来越大，直到文件 ASR 超时失败（生产"2 分钟后校准必失败"根因）。
+      const contextFloorMs = Math.max(0, commitEndAudioMs - deps.config.ROLLING_ASR_MAX_LOOKBACK_SECONDS * 1000);
+      const nextRequestStartMs = Math.max(windowStartAudioMs, contextFloorMs, deps.findRollingContextStart({
         commitStartMs: commitEndAudioMs,
         speechIntervals: plan.speechIntervals,
         baseLookbackMs: deps.config.ROLLING_ASR_OVERLAP_SECONDS * 1000,
@@ -851,7 +856,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // transcript 行，继续用同一段 tail 重入会无限递归并压垮 Node 进程。
       // 同时要求绝对音频起点确实前移；这是独立于 ASR 返回内容的硬保险，
       // 防止异常时间戳让同一窗口在会议封存阶段被反复提交。
-      const rollingTimelineAdvanced = rollingAudioStartMs > windowStartAudioMs + 100;
+      const previousCommitCursorMs = Number(rollingCommitCursorBeforeCorrection || 0);
+      const rollingTimelineAdvanced = rollingAudioStartMs > windowStartAudioMs + 100
+        || rollingCommitCursorMs > previousCommitCursorMs + 100;
       if (correctionSucceeded && !rollingTimelineAdvanced) {
         console.error(`[rolling-asr] stopped non-progressing final drain meeting=${meetingId} start=${windowStartAudioMs} next=${rollingAudioStartMs}`);
       }
