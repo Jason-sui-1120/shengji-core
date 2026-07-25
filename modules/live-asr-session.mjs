@@ -37,9 +37,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return;
   }
 
-  // 初始化期间（多次异步 DB 查询）到达的音频帧不能丢：先挂缓冲 handler，
-  // init 完成后由主 handler 接管并回放。此前 handler 在 await 之后才注册，
-  // MySQL 端 init 较慢时首帧丢失会导致 meta/帧错位、整段录音被判 gap 拒绝。
+  // init 早退路径的统一清理：防止缓冲 handler / 心跳 / 连接锁泄漏（进程级内存与锁泄漏）。
+  let clientPingTimer = null;
+  const cleanupEarlyExit = () => {
+    preInitFrames.length = 0;
+    if (clientPingTimer) clearInterval(clientPingTimer);
+    if (meetingLiveConnections.get(meetingId) === client) meetingLiveConnections.delete(meetingId);
+  };
+
   // 初始化期间（多次异步 DB 查询）到达的音频帧不能丢：全部进有序队列，
   // init 完成后先回放队列再放行实时帧。此前 handler 在 await 之后才注册，
   // MySQL 端 init 较慢时首帧丢失会导致 meta/帧错位、整段录音被判 gap 拒绝。
@@ -54,6 +59,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   const finalizedMeeting = await deps.getFinalizedMeetingByMeetingId(meetingId);
   if (!liveMeeting || liveMeeting.deletedAt || ["finalized", "archived"].includes(String(liveMeeting.status || "").toLowerCase()) || finalizedMeeting) {
     client.send(JSON.stringify({ type: "error", message: "会议已归档或已删除，不能继续建立实时转写连接" }));
+    cleanupEarlyExit();
     client.close(1008, "meeting archived or deleted");
     return;
   }
@@ -62,13 +68,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   const existingConnection = meetingLiveConnections.get(meetingId);
   if (existingConnection && existingConnection.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify({ type: "error", message: "该会议已有活跃的录音连接，请先结束现有录音" }));
+    cleanupEarlyExit();
     client.close(1011, "meeting already has an active connection");
     return;
   }
   meetingLiveConnections.set(meetingId, client);
   // server→client 心跳：浏览器收到 WS ping 会自动回 pong。音频暂停（静音/后台标签页）
   // 时仍有双向流量，防止公司入口网关/nginx 因空闲超时切断长连接（公网 nginx 同理）。
-  const clientPingTimer = setInterval(() => {
+  clientPingTimer = setInterval(() => {
     if (client.readyState === WebSocket.OPEN) {
       try { client.ping(); } catch { /* gone */ }
     }
