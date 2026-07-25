@@ -4,6 +4,10 @@
  * DB 相关函数接收 db 参数（openDb() 结果），由调用方注入。
  */
 
+// 与两端 config.mjs 的 ASR_MIN_STABLE_CHARS 默认值一致。本模块是纯函数库，
+// 不能 import 端侧 config（两端配置来源不同），需要调参时再改成注入。
+const ASR_MIN_STABLE_CHARS = 10;
+
 export function bumpMeetingStableRevision(db, meetingId) {
   db.prepare("UPDATE meetings SET stable_revision = stable_revision + 1 WHERE id = ?").run(Number(meetingId || 0));
   return Number(db.prepare("SELECT stable_revision AS stableRevision FROM meetings WHERE id = ?").get(Number(meetingId || 0))?.stableRevision || 0);

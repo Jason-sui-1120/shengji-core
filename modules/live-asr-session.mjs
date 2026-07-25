@@ -17,8 +17,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     ASR_UPSTREAM_MAX_SENTENCE_SILENCE: 1_200,
     ASR_PENDING_AUDIO_MAX_BYTES: 4 * 1024 * 1024,
     ASR_FINAL_STABILITY_DELAY_MS: 400,
-    ASR_SHORT_MERGE_DELAY_MS: 900,
-    ASR_INCOMPLETE_MERGE_DELAY_MS: 1_500,
+    // 与两端 config.mjs 的调优值对齐（拆分前的实际行为）：不完整句多等 2.5s 再收口，
+    // 避免实时稿被切成碎句。
+    ASR_SHORT_MERGE_DELAY_MS: 800,
+    ASR_INCOMPLETE_MERGE_DELAY_MS: 2_500,
     LIVE_DRAFT_LLM_CORRECTION: false,
     LIVE_SPEAKER_IDENTIFY_INTERVAL_MS: 12_000,
     ROLLING_ASR_TIMEOUT_MS: 90_000,
