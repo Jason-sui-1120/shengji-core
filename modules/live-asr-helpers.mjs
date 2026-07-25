@@ -7,15 +7,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { audioDir } from "./env.mjs";
-import { wrapPcm16AsWav } from "./audio-utils.mjs";
+import { wrapPcm16AsWav, getWavDurationSeconds, sliceWavBySeconds } from "./audio-utils.mjs";
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
+import { identifySpeakerFromAudio } from "./speakers.mjs";
+import { formatMeetingElapsedTime } from "./file-segments.mjs";
+import { getGlossaryEntries } from "./glossary-query.mjs";
 
 // 拆分自端侧 index.mjs 时的调优常量。本模块不能 import 端侧 config（两端配置
 // 来源不同），此处与两端 config.mjs 默认值保持一致；需要调参时再改成注入。
 const ASR_MIN_STABLE_CHARS = 10;
 const ROLLING_ASR_ENABLED = true;
 const ROLLING_ASR_OVERLAP_SECONDS = 8;
+const SPEAKER_DIARIZATION_MIN_TEXT_LENGTH = 4;
 const WAV_HEADER_BYTES = 44;
 
 // 源音频写入状态（原公网端 index.mjs 模块级 Map，随拆分迁移至此）。
@@ -49,6 +53,109 @@ function updateWavFileHeader(audioPath, pcmBytes) {
       try { fs.closeSync(fd); } catch {}
     }
   }
+}
+
+function getUsableDiarizationSegments(segments, text, wav) {
+  const compactLength = String(text || "").replace(/\s/g, "").length;
+  if (compactLength < SPEAKER_DIARIZATION_MIN_TEXT_LENGTH) return [];
+  if (!Array.isArray(segments) || segments.length < 2) return [];
+  const speakers = new Set(segments.map((segment) => segment.speaker));
+  if (speakers.size < 2) return [];
+  const duration = getWavDurationSeconds(wav);
+  if (duration && segments.reduce((sum, segment) => sum + Math.max(0, segment.end - segment.start), 0) < duration * 0.45) return [];
+  return segments.slice(0, 6);
+}
+
+function splitTranscriptClauses(text) {
+  const matches = String(text || "").match(/[^。！？!?；;，,]+[。！？!?；;，,]?/g) || [];
+  return matches.map((part) => part.trim()).filter(Boolean);
+}
+
+function findTextSplitBoundary(text, target, minIndex) {
+  const punctuation = "。！？!?；;，,";
+  const start = Math.max(minIndex + 1, target - 12);
+  const end = Math.min(text.length - 1, target + 12);
+  for (let radius = 0; radius <= 12; radius += 1) {
+    const right = target + radius;
+    if (right <= end && punctuation.includes(text[right])) return right + 1;
+    const left = target - radius;
+    if (left >= start && punctuation.includes(text[left])) return left + 1;
+  }
+  return Math.max(minIndex + 1, Math.min(text.length - 1, target));
+}
+
+function splitTextByDurationRatio(text, segments) {
+  const compact = String(text || "").trim();
+  if (!compact) return [];
+  const totalDuration = segments.reduce((sum, segment) => sum + Math.max(0.1, segment.end - segment.start), 0);
+  const parts = [];
+  let cursor = 0;
+  for (let index = 0; index < segments.length; index += 1) {
+    if (index === segments.length - 1) {
+      parts.push(compact.slice(cursor));
+      break;
+    }
+    const ratio = (segments[index].end - segments[index].start) / totalDuration;
+    const target = Math.max(cursor + 1, Math.round(cursor + compact.length * ratio));
+    const boundary = findTextSplitBoundary(compact, target, cursor);
+    parts.push(compact.slice(cursor, boundary));
+    cursor = boundary;
+  }
+  return parts.map(normalizeTranscriptSegment).filter(Boolean);
+}
+
+function splitTranscriptTextByDiarization(text, segments) {
+  const segmentTexts = segments.map((segment) => normalizeTranscriptSegment(segment.text || ""));
+  if (
+    segmentTexts.length === segments.length &&
+    segmentTexts.filter(Boolean).length === segments.length &&
+    segmentTexts.join("").replace(/\s/g, "").length >= String(text || "").replace(/\s/g, "").length * 0.55
+  ) {
+    return segmentTexts;
+  }
+
+  const clauses = splitTranscriptClauses(text);
+  if (clauses.length < segments.length) return splitTextByDurationRatio(text, segments);
+
+  const totalDuration = segments.reduce((sum, segment) => sum + Math.max(0.1, segment.end - segment.start), 0);
+  const totalChars = clauses.reduce((sum, clause) => sum + clause.length, 0) || text.length;
+  const parts = [];
+  let cursor = 0;
+  for (let index = 0; index < segments.length; index += 1) {
+    if (index === segments.length - 1) {
+      parts.push(clauses.slice(cursor).join(""));
+      break;
+    }
+    const targetChars = Math.round(((segments[index].end - segments[index].start) / totalDuration) * totalChars);
+    let take = 0;
+    let chars = 0;
+    while (cursor + take < clauses.length && (take === 0 || chars < targetChars)) {
+      chars += clauses[cursor + take].length;
+      take += 1;
+    }
+    parts.push(clauses.slice(cursor, cursor + take).join(""));
+    cursor += take;
+  }
+  return parts.map(normalizeTranscriptSegment).filter(Boolean);
+}
+
+function offsetTimeLabel(timeLabel, offsetSeconds) {
+  const match = String(timeLabel || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return timeLabel;
+  const hasSeconds = Boolean(match[3]);
+  const baseSeconds = hasSeconds
+    ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+    : Number(match[1]) * 3600 + Number(match[2]) * 60;
+  const next = Math.max(0, baseSeconds + Math.round(Number(offsetSeconds || 0)));
+  if (hasSeconds) {
+    const h = Math.floor(next / 3600) % 24;
+    const m = Math.floor((next % 3600) / 60);
+    const sec = next % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+  const h = Math.floor(next / 3600) % 24;
+  const m = Math.floor((next % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function safeParseJsonLocal(value) {
