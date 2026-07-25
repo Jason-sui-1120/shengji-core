@@ -403,6 +403,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         if (activeRollingSpeech) {
           activeRollingSpeech.endMs = getTranscriptAudioOffsetMs();
           rollingSpeechIntervals.push(activeRollingSpeech);
+          // 校准停滞时区间只增不滤，保留最近 500 段防内存膨胀。
+          if (rollingSpeechIntervals.length > 500) rollingSpeechIntervals.splice(0, rollingSpeechIntervals.length - 500);
           activeRollingSpeech = null;
         }
         scheduleTranscriptFlush(control.reason || "endpoint", { fallbackToPartial: true });
@@ -818,6 +820,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const pendingAudio = Buffer.concat(rollingAudioChunks);
       // 失败窗口独立保留重试，不能再拼回实时缓冲；否则等待期间新增音频会让下一次请求无限变大。
       if (pcm.length) {
+        // 失败窗口最多保留 3 个（音频在源录音里本来就有，重试失败可从源音频重建）。
+        // AIT 持续故障时无上限堆积 PCM 会把进程内存吃光。
+        while (failedRollingWindows.length >= 3) failedRollingWindows.shift();
         failedRollingWindows.push({
           pcm,
           startTranscriptId: correctionStartId,
