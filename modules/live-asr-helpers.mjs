@@ -3,10 +3,92 @@
  * 源音频管理/转写处理/滚动恢复/会后封存。
  * DB 相关函数接收 db 参数（openDb() 结果），由调用方注入。
  */
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { audioDir } from "./env.mjs";
+import { wrapPcm16AsWav } from "./audio-utils.mjs";
+import { normalizeTranscriptSegment } from "./text-utils.mjs";
+import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
 
-// 与两端 config.mjs 的 ASR_MIN_STABLE_CHARS 默认值一致。本模块是纯函数库，
-// 不能 import 端侧 config（两端配置来源不同），需要调参时再改成注入。
+// 拆分自端侧 index.mjs 时的调优常量。本模块不能 import 端侧 config（两端配置
+// 来源不同），此处与两端 config.mjs 默认值保持一致；需要调参时再改成注入。
 const ASR_MIN_STABLE_CHARS = 10;
+const ROLLING_ASR_ENABLED = true;
+const ROLLING_ASR_OVERLAP_SECONDS = 8;
+const WAV_HEADER_BYTES = 44;
+
+// 源音频写入状态（原公网端 index.mjs 模块级 Map，随拆分迁移至此）。
+const meetingSourceAudioWrites = new Map();
+
+let audioDirEnsured = false;
+function ensureAudioDir() {
+  if (audioDirEnsured) return;
+  fs.mkdirSync(audioDir, { recursive: true });
+  audioDirEnsured = true;
+}
+
+function getMeetingSourceAudioPath(meetingId) {
+  ensureAudioDir();
+  return path.join(audioDir, `meeting-${Number(meetingId || 0)}-source.wav`);
+}
+
+function updateWavFileHeader(audioPath, pcmBytes) {
+  const bytes = Math.max(0, Number(pcmBytes || 0));
+  const header = wrapPcm16AsWav(Buffer.alloc(0), 16000).subarray(0, WAV_HEADER_BYTES);
+  header.writeUInt32LE(36 + bytes, 4);
+  header.writeUInt32LE(bytes, 40);
+  let fd = 0;
+  try {
+    fd = fs.openSync(audioPath, "r+");
+    fs.writeSync(fd, header, 0, header.length, 0);
+  } catch (error) {
+    console.error(`[audio] header update failed path=${audioPath}: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    if (fd) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+function safeParseJsonLocal(value) {
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+// 转写行的读出规整（原公网端 index.mjs 同名函数，随拆分迁移至此）。
+function normalizeTranscriptRow(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    focus: Boolean(row.focus),
+    correctionApplied: Boolean(row.correctionApplied),
+    userEdited: Boolean(row.userEdited),
+    stabilityStatus: row.stabilityStatus || "stable",
+    qualityStatus: row.qualityStatus || (row.stabilityStatus === "stable" ? "unknown" : "realtime"),
+    stableRevision: Number(row.stableRevision || 0),
+    hotwords: safeParseJsonLocal(row.hotwordsJson) ?? [],
+    asrQuality: {
+      durationMs: Number(row.audioDurationMs || 0),
+      audioBytes: Number(row.audioBytes || 0),
+      rms: Number(row.audioRms || 0),
+      peak: Number(row.audioPeak || 0),
+      silenceRatio: Number(row.silenceRatio || 0),
+    },
+    hotwordsJson: undefined,
+  };
+}
+
+// 从 AI 返回文本中提取 JSON（原端侧 index.mjs 同名函数，随拆分迁移至此）。
+function parseJsonContent(content) {
+  const cleaned = String(content || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("AI did not return JSON");
+    return JSON.parse(match[0]);
+  }
+}
 
 export function bumpMeetingStableRevision(db, meetingId) {
   db.prepare("UPDATE meetings SET stable_revision = stable_revision + 1 WHERE id = ?").run(Number(meetingId || 0));
@@ -30,6 +112,7 @@ export function savePcmAsWav(pcmChunks, meetingId) {
   if (!pcm.length) return { audioPath: "", wav: null };
   const wav = wrapPcm16AsWav(pcm, 16000);
   const fileName = `meeting-${Number(meetingId || 1)}-${Date.now()}-${randomUUID().slice(0, 8)}.wav`;
+  ensureAudioDir();
   const audioPath = path.join(audioDir, fileName);
   fs.writeFileSync(audioPath, wav);
   return { audioPath, wav };
