@@ -15,6 +15,11 @@ export async function trySharedRoutes(routes, req, res, url) {
     if (r.method !== "*" && req.method !== r.method) continue;
     const m = url.pathname.match(r.pattern);
     if (!m) continue;
+    // 测试环境标记：证明请求命中了共享路由实现（不是端侧旧路由）。
+    // 仅 NODE_ENV=test 或 SHENGJI_ROUTE_SOURCE=1 时输出，生产不受影响。
+    if (process.env.NODE_ENV === "test" || process.env.SHENGJI_ROUTE_SOURCE === "1") {
+      if (typeof res.setHeader === "function") res.setHeader("x-shengji-route-source", "core");
+    }
     await r.handler(req, res, m, url);
     return true;
   }
