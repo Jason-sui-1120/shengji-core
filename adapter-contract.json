@@ -1,0 +1,79 @@
+{
+  "$schema": "adapter-contract/v1",
+  "description": "标准 Adapter 契约：共享业务层只通过该契约访问存储/模型/网关。SQLite 与 MySQL Adapter 均须实现，契约测试在两种测试库上执行，缺方法/字段/异常语义不一致 CI 失败。",
+  "groups": {
+    "meetings": {
+      "description": "会议读写",
+      "methods": [
+        "getMeetingLiveRecord",
+        "getFinalizedMeetingByMeetingId",
+        "createMeeting",
+        "softDeleteMeeting"
+      ]
+    },
+    "transcripts": {
+      "description": "转写与稳定稿读写",
+      "methods": [
+        "insertTranscript",
+        "updateTranscript",
+        "getLatestTranscriptId",
+        "bumpMeetingStableRevision"
+      ]
+    },
+    "audio": {
+      "description": "音频源追加、断点保存、Range 回放",
+      "methods": [
+        "ensureMeetingSourceAudio",
+        "appendMeetingSourceAudio",
+        "checkpointMeetingSourceAudio",
+        "finalizeMeetingSourceAudio"
+      ]
+    },
+    "speakers": {
+      "description": "说话人与声纹",
+      "methods": [
+        "identifySpeakerFromAudio",
+        "extractSpeakerEmbedding",
+        "diarizeSpeakerSegments"
+      ]
+    },
+    "summaries": {
+      "description": "议题与实时总结",
+      "methods": [
+        "replaceSummaryBlock"
+      ]
+    },
+    "actions": {
+      "description": "待办",
+      "methods": [
+        "insertAction",
+        "updateAction",
+        "softDeleteAction",
+        "restoreAction"
+      ]
+    },
+    "models": {
+      "description": "模型调用与 Gateway",
+      "methods": [
+        "callChatCompletion",
+        "callSpeakerDiarization"
+      ]
+    },
+    "analysis": {
+      "description": "任务状态、超时、重试与降级",
+      "methods": [
+        "recordAnalysisRun",
+        "scheduleServerAutoAnalyze",
+        "getFinalizationGate",
+        "startFinalizeDraftJob",
+        "getFinalizeDraftJobStatus"
+      ]
+    },
+    "health": {
+      "description": "健康检查与构建信息",
+      "methods": [
+        "getBuildInfo"
+      ]
+    }
+  }
+}
