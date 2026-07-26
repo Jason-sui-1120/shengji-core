@@ -2,10 +2,10 @@
 // 不只是"函数名存在"，而是"注入后行为正确"。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerGlossaryRoutes } from "../modules/register-glossary-routes.mjs";
-import { registerStateRoutes } from "../modules/register-state-routes.mjs";
-import { registerProjectMeetingRoutes } from "../modules/register-project-meeting-routes.mjs";
-import { trySharedRoutes } from "../modules/try-shared-routes.mjs";
+import { registerGlossaryRoutes } from "./register-glossary-routes.mjs";
+import { registerStateRoutes } from "./register-state-routes.mjs";
+import { registerProjectMeetingRoutes } from "./register-project-meeting-routes.mjs";
+import { trySharedRoutes } from "./try-shared-routes.mjs";
 
 // 最小 HTTP 模拟：构造 req/res/url，捕获 sendJson 输出
 function mockReqRes(method, pathname, body = null) {

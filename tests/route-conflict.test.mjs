@@ -2,13 +2,13 @@
 // 验证：对共享路由表中的每个 pattern，确认它不会错误匹配端侧独有的更具体路径。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerGlossaryRoutes } from "../modules/register-glossary-routes.mjs";
-import { registerSpeakerRoutes } from "../modules/register-speaker-routes.mjs";
-import { registerMeetingExtrasRoutes } from "../modules/register-meeting-extras-routes.mjs";
-import { registerFinalizationRoutes } from "../modules/register-finalization-routes.mjs";
-import { registerStateRoutes } from "../modules/register-state-routes.mjs";
-import { registerProjectMeetingRoutes } from "../modules/register-project-meeting-routes.mjs";
-import { registerProjectContextRoutes } from "../modules/register-project-context-routes.mjs";
+import { registerGlossaryRoutes } from "./register-glossary-routes.mjs";
+import { registerSpeakerRoutes } from "./register-speaker-routes.mjs";
+import { registerMeetingExtrasRoutes } from "./register-meeting-extras-routes.mjs";
+import { registerFinalizationRoutes } from "./register-finalization-routes.mjs";
+import { registerStateRoutes } from "./register-state-routes.mjs";
+import { registerProjectMeetingRoutes } from "./register-project-meeting-routes.mjs";
+import { registerProjectContextRoutes } from "./register-project-context-routes.mjs";
 
 function stubDeps() {
   return {
