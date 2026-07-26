@@ -37,7 +37,7 @@ test("共享路由真正注册：x-shengji-route-source 头证明命中 core 实
       AUTH_MODE: "mock", MOCK_USERS: "route@ke.com:路由测试",
     });
   }
-  const child = spawn(process.execPath, ["--env-file=.env", "server/index.mjs"], {
+  const child = spawn(process.execPath, [...(fs.existsSync(".env") ? ["--env-file=.env"] : []), "server/index.mjs"], {
     cwd: path.resolve("."), env, stdio: ["ignore", "pipe", "pipe"],
   });
   try {

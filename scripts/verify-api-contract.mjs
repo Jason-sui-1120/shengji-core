@@ -47,7 +47,7 @@ function startServer(side, dir, port) {
       ADMIN_EMAILS: "contract@ke.com",
     });
   }
-  const child = spawn(process.execPath, ["--env-file=.env", "server/index.mjs"], {
+  const child = spawn(process.execPath, [...(fs.existsSync(".env") ? ["--env-file=.env"] : []), "server/index.mjs"], {
     cwd: dir, env, stdio: ["ignore", "pipe", "pipe"],
   });
   child.stderr.on("data", (d) => process.stderr.write(`[${side}] ${d}`));
