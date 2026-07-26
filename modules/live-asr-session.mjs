@@ -93,6 +93,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let pendingSpeechStartAt = "";
   let pendingSpeechStartAudioMs = null;
   let latestPartial = "";
+  // LM 类模型（huoshanLM）的 TranscriptionResultChanged 是"从句首到当前"的
+  // 累积快照，且对英文长句不发 SentenceEnd。vad.endpoint 的兜底 flush 会用
+  // latestPartial 落库，若不加抑制会把同一句话的快照反复落库（前缀累积重复行）。
+  let lastPartialFlushText = "";
+  let lastPartialFlushAudioStartMs = 0;
   let realtimeSegmentSequence = 0;
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
@@ -1024,7 +1029,16 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       transcriptFlushReason = "";
     }
     let text = deps.normalizeTranscriptSegment(transcriptBuffer);
-    if (!text && options.fallbackToPartial) text = deps.normalizeTranscriptSegment(latestPartial);
+    const usingPartialFallback = !text && Boolean(options.fallbackToPartial);
+    if (usingPartialFallback) text = deps.normalizeTranscriptSegment(latestPartial);
+    // 快照前缀抑制：与上次兜底落库文本相同或是其前缀扩展时跳过——
+    // 这句话仍在进行中，等 SentenceEnd 或更长的停顿再落，避免同一句话
+    // 被反复落库成"前缀累积"重复行（英文 LM 快照场景的总根因）。
+    // 仅抑制常规 endpoint 兜底；stop/close/seal 等终结性 flush 必须落最终文本。
+    if (reason === "endpoint" && usingPartialFallback && text && lastPartialFlushText
+        && (text === lastPartialFlushText || text.startsWith(lastPartialFlushText))) {
+      return null;
+    }
     // 保存真正的 ASR 原文（normalize 后但未去 filler），用于审计对比
     const rawAsrText = text;
     if (!text) {
@@ -1065,6 +1079,16 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       glossaryEntries = deps.getMeetingGlossaryEntries(meetingId);
       hotwords = deps.uniqueStrings(glossaryEntries.flatMap((entry) => [entry.term, ...(entry.aliases || [])]).filter(Boolean)).slice(0, 100);
     } catch { /* 词库不可用时保留原文 */ }
+    if (usingPartialFallback) {
+      lastPartialFlushText = text;
+      lastPartialFlushAudioStartMs = transcriptBufferStartedAt
+        ? Number(transcriptBufferStartedAudioMs || 0)
+        : getTranscriptAudioOffsetMs();
+    } else {
+      // 正常 flush（SentenceEnd 进 buffer）说明快照句子已终结，重置快照跟踪。
+      lastPartialFlushText = "";
+      lastPartialFlushAudioStartMs = 0;
+    }
     transcriptBuffer = "";
     transcriptBufferStartedAt = "";
     transcriptBufferStartedAudioMs = 0;
