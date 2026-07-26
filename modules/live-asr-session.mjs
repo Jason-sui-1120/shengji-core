@@ -1163,7 +1163,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
       return null;
     }
-    deps.refreshMeetingTranscriptSnapshotDebounced(meetingId);
+    // 快照机制已下线（两端纪要统一实时查 transcripts 表）；保留可选调用兼容旧端侧注入。
+    deps.refreshMeetingTranscriptSnapshotDebounced?.(meetingId);
     for (const line of insertedLines) {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line }));
       if (line.stabilityStatus === "stable") deps.scheduleServerAutoAnalyze(meetingId, line.stableRevision);
