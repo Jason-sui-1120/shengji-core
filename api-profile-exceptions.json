@@ -1,0 +1,110 @@
+{
+  "$schema": "api-profile-exceptions/v1",
+  "description": "双端唯一允许的路由差异清单。所有不在此清单中的业务 API 必须双端同时存在、请求与响应结构一致。本文件由 shengji-core 维护，两端 CI 校验。",
+  "exceptions": [
+    {
+      "method": "GET",
+      "path": "/api/auth/cas-login",
+      "availableIn": "company",
+      "reason": "公司 CAS 单点登录入口",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/cas-callback",
+      "availableIn": "company",
+      "reason": "公司 CAS 单点登录回调",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "availableIn": "company",
+      "reason": "公司端登录态查询（公网端无登录体系）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/mock-users",
+      "availableIn": "company",
+      "reason": "公司端 mock 登录用户列表（本地/预发调试用）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/mock-login",
+      "availableIn": "company",
+      "reason": "公司端 mock 登录（本地/预发调试用）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "availableIn": "company",
+      "reason": "公司端登出（公网端无会话）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects/:id/members",
+      "availableIn": "company",
+      "reason": "公司端多用户项目成员管理",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "*",
+      "path": "/api/projects/:id/members/:memberId",
+      "availableIn": "company",
+      "reason": "公司端多用户项目成员管理（增删改）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "*",
+      "path": "/api/projects/:id/visibility",
+      "availableIn": "company",
+      "reason": "公司端项目可见性权限管理",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/meetings/:id/audio",
+      "availableIn": "company",
+      "reason": "公司端会议录音访问（canAccessMeeting 鉴权，MySQL 分片重组）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audio/meeting-:id-*",
+      "availableIn": "both",
+      "reason": "AIT diarization 回源取音频通道。两端路径形态不同：公司端强制 meeting-<id>- 前缀并做 canAccessMeeting 鉴权；公网端裸文件名（生产无鉴权体系）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/meetings/:id/speaker-track",
+      "availableIn": "company",
+      "reason": "公司端说话人时间轨查询（公网端并入 playback 响应）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    },
+    {
+      "method": "GET",
+      "path": "/api/meetings/:id/playback.wav",
+      "availableIn": "public",
+      "reason": "公网端回放音频流（Range 支持；公司端由 /api/meetings/:id/audio 承担）",
+      "owner": "suizhihao002",
+      "reviewedAt": "2026-07-26"
+    }
+  ]
+}
