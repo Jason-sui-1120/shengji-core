@@ -1,0 +1,116 @@
+{
+  "$schema": "api-contract/v1",
+  "description": "双端共同业务 API 契约。契约测试以真实服务校验：方法/路径/状态码/必填字段/字段类型。差异仅允许 api-profile-exceptions.json 登记项。",
+  "apis": [
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "status": 200,
+      "requiredFields": {
+        "ok": "boolean",
+        "coreVersion": "string",
+        "deploymentProfile": "string",
+        "effectiveModels": "object"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/state",
+      "status": 200,
+      "requiredFields": {
+        "projects": "array",
+        "meeting": "object",
+        "transcripts": "array",
+        "summaryBlocks": "array",
+        "actions": "array"
+      },
+      "auth": "company"
+    },
+    {
+      "method": "GET",
+      "path": "/api/asr/models",
+      "status": 200,
+      "requiredFields": {
+        "models": "array"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/glossary",
+      "status": [
+        200,
+        400,
+        500
+      ],
+      "requiredFields": {},
+      "note": "空 body 时公司端 upsert 校验抛错（500）、公网端 400——体差异已记录，待统一为 400"
+    },
+    {
+      "method": "GET",
+      "path": "/api/meetings/finalization-status?meetingId=1",
+      "status": [
+        200,
+        404
+      ],
+      "requiredFields": {}
+    },
+    {
+      "method": "POST",
+      "path": "/api/meetings/finalize",
+      "status": [
+        200,
+        400,
+        404,
+        409
+      ],
+      "requiredFields": {}
+    },
+    {
+      "method": "POST",
+      "path": "/api/meetings/finalize-draft",
+      "status": [
+        200,
+        202,
+        400,
+        404,
+        409
+      ],
+      "requiredFields": {}
+    },
+    {
+      "method": "GET",
+      "path": "/api/summary-blocks",
+      "status": [
+        200,
+        404
+      ],
+      "requiredFields": {},
+      "optional": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/actions",
+      "status": [
+        200,
+        201,
+        400
+      ],
+      "requiredFields": {},
+      "note": "创建成功：公司端 201、公网端 200——待统一"
+    },
+    {
+      "method": "GET",
+      "path": "/api/meeting-segments",
+      "status": [
+        200,
+        404
+      ],
+      "requiredFields": {},
+      "optional": true
+    }
+  ],
+  "notes": {
+    "optional": "optional=true 表示该接口允许路径形式差异（query/路径参数），契约测试仅校验存在性与基本结构",
+    "auth": "auth=company 表示公司端需登录态（契约测试用 mock 登录），公网端裸调"
+  }
+}
