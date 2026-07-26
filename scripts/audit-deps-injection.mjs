@@ -21,9 +21,22 @@ import path from "node:path";
 // coreRoot 解析顺序：--core 参数 > SHENGJI_CORE_DIR 环境变量 > 脚本所在仓库。
 // 两端 CI 通过环境变量指向本地 core 镜像/克隆，保证白名单与脚本同版本。
 const coreArgIndex = process.argv.indexOf("--core");
-const rootDir = coreArgIndex >= 0
-  ? path.resolve(process.argv[coreArgIndex + 1])
-  : (process.env.SHENGJI_CORE_DIR ? path.resolve(process.env.SHENGJI_CORE_DIR) : path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."));
+const scriptDir = path.dirname(new URL(import.meta.url).pathname);
+function resolveCoreRoot() {
+  if (coreArgIndex >= 0) return path.resolve(process.argv[coreArgIndex + 1]);
+  if (process.env.SHENGJI_CORE_DIR) return path.resolve(process.env.SHENGJI_CORE_DIR);
+  const repoRoot = path.resolve(scriptDir, "..");
+  if (fs.existsSync(path.join(repoRoot, "modules", "live-asr-session.mjs"))) return repoRoot;
+  // 消费端分发形态：脚本在 <consumer>/scripts/，共享模块在 <consumer>/server/。
+  // 把共享模块目录当作扫描源，rootDir 仍指向仓库根（白名单/契约在此）。
+  if (fs.existsSync(path.join(repoRoot, "server", "live-asr-session.mjs"))) return repoRoot;
+  return repoRoot;
+}
+const rootDir = resolveCoreRoot();
+// 共享模块扫描目录：core 仓库是 modules/，消费端是 server/。
+const modulesScanDir = fs.existsSync(path.join(rootDir, "modules", "live-asr-session.mjs"))
+  ? path.join(rootDir, "modules")
+  : path.join(rootDir, "server");
 
 function loadExceptions() {
   try {
@@ -178,14 +191,20 @@ function extractInjection(filePath) {
 }
 
 // ---------- 3. 主流程 ----------
-const modules = ["live-asr-session.mjs", "live-asr-helpers.mjs", "tail-stabilization.mjs"];
+const modules = ["live-asr-session.mjs", "live-asr-helpers.mjs", "tail-stabilization.mjs", "rolling-transcript-service.mjs"];
 const usage = { configKeys: new Set(), fnKeys: new Set() };
+const missingModules = [];
 for (const mod of modules) {
-  const file = path.join(rootDir, "modules", mod);
-  if (!fs.existsSync(file)) continue;
+  const file = path.join(modulesScanDir, mod);
+  if (!fs.existsSync(file)) { missingModules.push(mod); continue; }
   const u = extractDepsUsage(file);
   u.configKeys.forEach((k) => usage.configKeys.add(k));
   u.fnKeys.forEach((k) => usage.fnKeys.add(k));
+}
+// 共享模块找不到就是门禁自身失效（CI 曾因此 0 keys 假通过），必须硬失败。
+if (missingModules.length || usage.fnKeys.size === 0) {
+  console.error(`❌ 注入审计无法扫描共享模块（缺失: ${missingModules.join(", ") || "无"}，fn keys=${usage.fnKeys.size}），门禁失效，阻断。rootDir=${rootDir} scanDir=${modulesScanDir}`);
+  process.exit(1);
 }
 
 const targets = [

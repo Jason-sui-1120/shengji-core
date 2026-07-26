@@ -39,11 +39,9 @@
       "path": "/api/glossary",
       "status": [
         200,
-        400,
-        500
+        400
       ],
-      "requiredFields": {},
-      "note": "空 body 时公司端 upsert 校验抛错（500）、公网端 400——体差异已记录，待统一为 400"
+      "requiredFields": {}
     },
     {
       "method": "GET",
@@ -92,11 +90,9 @@
       "path": "/api/actions",
       "status": [
         200,
-        201,
         400
       ],
-      "requiredFields": {},
-      "note": "创建成功：公司端 201、公网端 200——待统一"
+      "requiredFields": {}
     },
     {
       "method": "GET",
