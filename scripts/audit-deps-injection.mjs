@@ -18,7 +18,37 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const rootDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+// coreRoot 解析顺序：--core 参数 > SHENGJI_CORE_DIR 环境变量 > 脚本所在仓库。
+// 两端 CI 通过环境变量指向本地 core 镜像/克隆，保证白名单与脚本同版本。
+const coreArgIndex = process.argv.indexOf("--core");
+const rootDir = coreArgIndex >= 0
+  ? path.resolve(process.argv[coreArgIndex + 1])
+  : (process.env.SHENGJI_CORE_DIR ? path.resolve(process.env.SHENGJI_CORE_DIR) : path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."));
+
+function loadExceptions() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(rootDir, "adapter-exceptions.json"), "utf8"));
+    const map = new Map();
+    for (const entry of raw.exceptions || []) {
+      const k = `${entry.availableIn}:${entry.key}`;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(entry);
+    }
+    // both 表示两端都豁免
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+const exceptions = loadExceptions();
+function isExcepted(side, key, entry) {
+  const candidates = [...(exceptions.get(`${side}:${key}`) || []), ...(exceptions.get(`both:${key}`) || [])];
+  if (!candidates.length) return false;
+  if (!entry) return true;
+  // 过期白名单不再豁免
+  const today = new Date().toISOString().slice(0, 10);
+  return candidates.some((e) => !e.expiresAt || e.expiresAt >= today);
+}
 
 function argValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -93,11 +123,19 @@ function classifyEntry(rawEntry) {
   const m = entry.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*([\s\S]*))?$/);
   if (!m) return null;
   const [, key, rawValue] = m;
-  if (rawValue === undefined) return [key, "shorthand"];
+  if (rawValue === undefined) return [key, "shorthand", ""];
   const value = rawValue.trim();
-  if (/^[\d"'`]/.test(value) || /^(true|false|null)\b/.test(value)) return [key, "literal"];
-  if (/=>|^async\b|^function\b|^\(\s*\)\s*=>/.test(value)) return [key, "inline-fn"];
-  return [key, "constant"];
+  if (/^[\d"'`]/.test(value) || /^(true|false|null)\b/.test(value)) return [key, "literal", value];
+  if (/=>|^async\b|^function\b|^\(\s*\)\s*=>/.test(value)) return [key, "inline-fn", value];
+  return [key, "constant", value];
+}
+
+// 常量返回型 stub 特征：函数体只有一句 return 常量（=> []、=> null、async () => {} 等）
+function isConstantReturnStub(value) {
+  const body = String(value || "").replace(/\s+/g, " ").trim();
+  return /=>\s*(\[\]|\{\}|null|false|true|0|""|''|undefined)\s*;?$/.test(body)
+    || /=>\s*\{\s*\}$/.test(body)
+    || /\{\s*return\s+(\[\]|\{\}|null|false|true|0|""|''|undefined)\s*;?\s*\}$/.test(body);
 }
 
 function sliceBlock(src, openIndex) {
@@ -122,7 +160,7 @@ function extractInjection(filePath) {
   const provided = new Map();
   for (const entry of splitTopLevelEntries(block)) {
     const parsed = classifyEntry(entry);
-    if (parsed) provided.set(parsed[0], parsed[1]);
+    if (parsed) provided.set(parsed[0], { form: parsed[1], value: parsed[2] });
   }
 
   // config 子块：从块内定位 "config:" 后的第一个 {
@@ -133,7 +171,7 @@ function extractInjection(filePath) {
     const configBlock = sliceBlock(block, configOpen);
     for (const entry of splitTopLevelEntries(configBlock)) {
       const parsed = classifyEntry(entry);
-      if (parsed) configProvided.set(parsed[0], parsed[1]);
+      if (parsed) configProvided.set(parsed[0], { form: parsed[1], value: parsed[2] });
     }
   }
   return { provided, configProvided };
@@ -164,16 +202,16 @@ for (const [name, targetDir] of targets) {
 
   const missingConfig = [...usage.configKeys].filter((k) => !injection.configProvided.has(k));
   const missingFns = [...usage.fnKeys].filter((k) => !injection.provided.has(k));
-  const literalConfig = [...injection.configProvided.entries()].filter(([, form]) => form === "literal").map(([k]) => k);
-  const inlineFns = [...injection.provided.entries()].filter(([, form]) => form === "inline-fn").map(([k]) => k);
+  const literalConfig = [...injection.configProvided.entries()].filter(([k, info]) => info.form === "literal" && !isExcepted(name, k)).map(([k]) => k);
+  const inlineFns = [...injection.provided.entries()].filter(([k, info]) => info.form === "inline-fn" && isConstantReturnStub(info.value) && !isExcepted(name, k)).map(([k]) => k);
 
   console.log(`\n[${name}] ${indexPath}`);
   console.log(`  共享层消费: ${usage.configKeys.size} config keys, ${usage.fnKeys.size} fn keys`);
   if (missingConfig.length) { console.log(`  ❌ 缺失 config key: ${missingConfig.join(", ")}`); missingTotal += missingConfig.length; }
   if (missingFns.length) { console.log(`  ❌ 缺失 fn key: ${missingFns.join(", ")}`); missingTotal += missingFns.length; }
-  if (literalConfig.length) console.log(`  ⚠️  config 字面量硬编码（config.mjs 改动不生效）: ${literalConfig.join(", ")}`);
-  if (inlineFns.length) console.log(`  ℹ️  内联函数注入（人工核对是否 stub）: ${inlineFns.join(", ")}`);
-  if (!missingConfig.length && !missingFns.length && !literalConfig.length) console.log("  ✓ 注入层完整且无字面量硬编码");
+  if (literalConfig.length) { console.log(`  ❌ config 字面量硬编码（改 config.mjs 不生效；合法差异请登记 adapter-exceptions.json）: ${literalConfig.join(", ")}`); missingTotal += literalConfig.length; }
+  if (inlineFns.length) { console.log(`  ❌ 常量返回型 stub 注入（必须接真实实现或登记 adapter-exceptions.json）: ${inlineFns.join(", ")}`); missingTotal += inlineFns.length; }
+  if (!missingConfig.length && !missingFns.length && !literalConfig.length && !inlineFns.length) console.log("  ✓ 注入层完整、无未登记硬编码/stub");
 }
 
 console.log(missingTotal ? `\n发现 ${missingTotal} 个缺失 key，阻断发布` : "\n注入审计通过");

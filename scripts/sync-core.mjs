@@ -68,6 +68,32 @@ function main() {
       }
     }
 
+    // scripts（门禁脚本）同步到消费端 scripts/
+    for (const sc of manifest.scripts || []) {
+      const targetFile = join(target, "scripts", sc.file);
+      if (!existsSync(targetFile)) {
+        errors.push(`MISSING: scripts/${sc.file}`);
+        continue;
+      }
+      const actualHash = hashFile(targetFile);
+      if (actualHash !== sc.sha256) {
+        errors.push(`HASH MISMATCH: scripts/${sc.file}`);
+      }
+    }
+
+    // policies（白名单/例外清单）同步到消费端根目录
+    for (const p of manifest.policies || []) {
+      const targetFile = join(target, p.file);
+      if (!existsSync(targetFile)) {
+        errors.push(`MISSING: ${p.file}`);
+        continue;
+      }
+      const actualHash = hashFile(targetFile);
+      if (actualHash !== p.sha256) {
+        errors.push(`HASH MISMATCH: ${p.file}`);
+      }
+    }
+
     // 校验 core-sync.json 版本
     if (existsSync(targetManifestPath)) {
       const targetManifest = JSON.parse(readFileSync(targetManifestPath, "utf8"));
@@ -107,6 +133,18 @@ function main() {
       const src = join(coreRoot, "tests", t.file);
       const dst = join(targetServer, t.file);
       copyFileSync(src, dst);
+      copied++;
+    }
+
+    // scripts（门禁脚本）复制到消费端 scripts/
+    for (const sc of manifest.scripts || []) {
+      copyFileSync(join(coreRoot, "scripts", sc.file), join(target, "scripts", sc.file));
+      copied++;
+    }
+
+    // policies（白名单/例外清单）复制到消费端根目录
+    for (const p of manifest.policies || []) {
+      copyFileSync(join(coreRoot, p.file), join(target, p.file));
       copied++;
     }
 

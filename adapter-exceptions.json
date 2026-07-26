@@ -1,0 +1,110 @@
+{
+  "$schema": "adapter-exceptions/v1",
+  "description": "注入审计白名单：合法的端侧差异注入。字面量/内联实现必须在审计脚本中豁免时需在此登记。",
+  "exceptions": [
+    {
+      "key": "openDb",
+      "availableIn": "company",
+      "form": "literal-null",
+      "reason": "公司端 MySQL 替代 SQLite；共享层对 openDb 为 null 的路径有 MySQL adapter 注入兜底",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "ASR_ENABLE_ADVANCED_PAYLOAD",
+      "availableIn": "company",
+      "form": "config-reference",
+      "reason": "公司 AIT 直连实测可全开（2026-07-25 探针验证）；取值来自 config.mjs，可用 env 覆盖",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "ASR_USE_WS_OPTIONS",
+      "availableIn": "company",
+      "form": "config-reference",
+      "reason": "公司 AIT 直连需无附加握手参数；取值来自 config.mjs",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "getAsrHotwordsForMeeting",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "MySQL 异步查询包装为同步缓存闭包（共享 session 同步调用约定）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "getMeetingGlossaryEntries",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "MySQL 异步查询包装为同步缓存闭包（共享 session 同步调用约定）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "performRollingTranscriptCorrection",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "MySQL 文件 ASR 稳定化 adapter（切片基准已修复，2026-07-26）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "loadRollingResumeAudio",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "MySQL 异步版断点续跑实现（对齐公网语义，2026-07-25）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "diarizeSpeakerSegments",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "公司端透传共享 speakers.mjs 实现（AIT 直连），包装为 async 签名",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "correctTranscriptText",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "公司端完整 LLM 纠错实现（AIT 直连，2026-07-25 接线）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "formatMeetingElapsedTime",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "包装本地 formatAudioOffset（mm:ss 格式与公网端一致）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "resolveRequestedAsrModel",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "公司端模型路由简化为 model || AIT_ASR_MODEL（无 Gateway 候选协商）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "normalizeTranscriptDraftTimeline",
+      "availableIn": "public",
+      "form": "inline-fn",
+      "reason": "公网端行草稿时间轴规整（SQLite 同步实现）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    },
+    {
+      "key": "markMeetingSourceAudioStabilizing",
+      "availableIn": "company",
+      "form": "inline-fn",
+      "reason": "公司端 MySQL 慢窗口期需要 stabilizing 中间态（公网端直接 recording→complete，不需要）",
+      "owner": "suizhihao002",
+      "expiresAt": "2026-12-31"
+    }
+  ]
+}
