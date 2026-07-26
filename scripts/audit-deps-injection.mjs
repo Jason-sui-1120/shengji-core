@@ -31,9 +31,13 @@ function extractDepsUsage(filePath) {
   const configKeys = new Set();
   const fnKeys = new Set();
   for (const match of src.matchAll(/deps\.config\.([A-Z0-9_]+)/g)) configKeys.add(match[1]);
+  // 可选调用（deps.xxx?.( 或 typeof 守卫）不纳入必需清单——端侧可以不注入。
+  const optionalFns = new Set();
+  for (const match of src.matchAll(/deps\.([a-zA-Z][a-zA-Z0-9]*)\?\./g)) optionalFns.add(match[1]);
+  for (const match of src.matchAll(/typeof deps\.([a-zA-Z][a-zA-Z0-9]*) === "function"/g)) optionalFns.add(match[1]);
   // deps.xxx( 或 deps.xxx, 形式（排除 deps.config）
   for (const match of src.matchAll(/deps\.([a-zA-Z][a-zA-Z0-9]*)/g)) {
-    if (match[1] !== "config") fnKeys.add(match[1]);
+    if (match[1] !== "config" && !optionalFns.has(match[1])) fnKeys.add(match[1]);
   }
   return { configKeys, fnKeys };
 }
