@@ -7,11 +7,12 @@ import path from "node:path";
 
 test("空数据库冷启动：seedDatabase 不抛错且模型候选已入库", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shengji-coldstart-"));
-  process.env.DATA_DIR = tmp;
-  const { seedDatabase } = await import("./schema.mjs").catch(() => ({ seedDatabase: null }));
+  // 数据目录环境变量是 VOICE_DATA_DIR（env.mjs 定义），不是 DATA_DIR。
+  process.env.VOICE_DATA_DIR = tmp;
+  const { seedDatabase, ensureDatabase } = await import("./schema.mjs").catch(() => ({}));
   if (!seedDatabase) { console.log("skip: 公司端 schema 在 db/schema.mjs，本回归仅适用公网端"); return; }
   const { openDb } = await import("./db.mjs");
-  assert.doesNotThrow(() => seedDatabase(true), "seedDatabase 不得抛 ReferenceError");
+  assert.doesNotThrow(() => { ensureDatabase(); seedDatabase(true); }, "建库+种子不得抛错（asrModels 引用）");
   const db = openDb();
   const rows = db.prepare("SELECT id, vendor FROM asr_model_candidates").all();
   db.close();
