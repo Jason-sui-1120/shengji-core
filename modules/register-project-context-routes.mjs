@@ -9,7 +9,7 @@
  *   getProjectChatHistory(projectId, authContext)         → Promise<result>
  *   createActionFromChat(projectId, body, authContext)    → Promise<result>
  *   markProjectChatMemorySaved(projectId, messageId, authContext) → Promise<result>
- *   getAuthContext(req)                            → authContext
+ *   getAuthContext(req)                            → authContext（请求级，req.shengjiAuthContext）
  */
 export function registerProjectContextRoutes(deps) {
   const { readJson, sendJson, updateProjectMemory, chatWithProject, getProjectChatHistory, createActionFromChat, markProjectChatMemorySaved, getAuthContext } = deps;

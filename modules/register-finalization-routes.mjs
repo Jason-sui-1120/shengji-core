@@ -11,7 +11,7 @@
  *   finalizeMeeting(meetingId, opts)       → Promise<result>
  *   startFinalizeDraftJob(meetingId, model) → jobStatus（202 异步）
  *   getFinalizeDraftJobStatus(meetingId)   → jobStatus
- *   getAuthContext(req)                    → authContext
+ *   getAuthContext(req)                    → authContext（请求级，req.shengjiAuthContext）
  */
 export function registerFinalizationRoutes(deps) {
   const { readJson, sendJson, canAccess, getFinalizationGate, saveFinalizedDraft, finalizeMeeting, startFinalizeDraftJob, getFinalizeDraftJobStatus, getAuthContext } = deps;

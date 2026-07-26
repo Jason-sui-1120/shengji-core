@@ -11,7 +11,7 @@
  *   deleteGlossaryEntry(id, authContext)   → Promise<void>
  *   correctBatchGlossary(body, authContext)→ Promise<result>
  *   getState(authContext)                  → Promise<state>  （路由响应体）
- *   getAuthContext(req)                    → authContext     （公网 {}，公司端 currentUser）
+ *   getAuthContext(req)                    → authContext（请求级，req.shengjiAuthContext）     （公网 {}，公司端 currentUser）
  */
 export function registerGlossaryRoutes(deps) {
   const { readJson, sendJson, upsertGlossaryEntry, deleteGlossaryEntry, correctBatchGlossary, getState, getAuthContext } = deps;

@@ -14,7 +14,7 @@
  *   restoreMeeting(id, authContext)        → Promise<result>
  *   purgeMeeting(id, authContext)          → Promise<result>
  *   purgeAction(id, authContext)           → Promise<result>
- *   getAuthContext(req)                    → authContext
+ *   getAuthContext(req)                    → authContext（请求级，req.shengjiAuthContext）
  */
 export function registerProjectMeetingRoutes(deps) {
   const { readJson, sendJson, createMeeting, createProject, getTrash,

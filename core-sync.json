@@ -1,5 +1,5 @@
 {
-  "version": "1.4.6",
+  "version": "1.4.7",
   "releasedAt": "2026-07-25",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -153,11 +153,11 @@
     },
     {
       "file": "register-glossary-routes.mjs",
-      "sha256": "fcb0ca81592fd4ff68e9ab308a3293489de00bfb4b2dd05c5dbb109f97fd469e"
+      "sha256": "84b739d1a7a896e42a9d1f36bdc5812be2f9e1143614f931bc55827577d30cbe"
     },
     {
       "file": "register-speaker-routes.mjs",
-      "sha256": "dd317d624bbe1fb3e13875c66ee3951d6d28f9bf0385e100ace1ca894c78fe66"
+      "sha256": "b5f9e00725c5ebc86d6d4261ca2ab9b9ebbecfe94b9321835e786bea447fb395"
     },
     {
       "file": "register-meeting-extras-routes.mjs",
@@ -165,19 +165,19 @@
     },
     {
       "file": "register-finalization-routes.mjs",
-      "sha256": "34e090edb98e0e4368229645d4b04d60347ab5e02935c297f039ebadd6d36ca3"
+      "sha256": "bed4c1fdcbca73827804c3569e922ad7acd7481045d0f7e5dc6591ebff46b253"
     },
     {
       "file": "register-state-routes.mjs",
-      "sha256": "beecccf2df976525587f2c640d590f8a17f63722523ca405d563fab7bf326ce1"
+      "sha256": "23c4769a09cee6c366acb142c19ce1e8fe61b46f79662cd4adc9d808fe44140f"
     },
     {
       "file": "register-project-meeting-routes.mjs",
-      "sha256": "0796bd49ef5a5c6fb3cd52f1c6b86df35587d1a2f71df02214a9dd2e8ebf9ef4"
+      "sha256": "cfb0534655a5ed7dcf9bfc278058706fe08802118b06ba50ea5338c0ca4f3514"
     },
     {
       "file": "register-project-context-routes.mjs",
-      "sha256": "1f7d3a5b5a610d248fa40bd5a02c03132a7503098fd5909edfaac9e3d1103997"
+      "sha256": "a515987cf86e13f19c12f637f0b23567c5175938231b454b0b82a377e253fa69"
     },
     {
       "file": "try-shared-routes.mjs",
@@ -255,7 +255,7 @@
     },
     {
       "file": "shared-routes-registered.test.mjs",
-      "sha256": "aecb32fe85d3943e0d6db5b8fcf5359f76cdebfdf938988bb4d467c5ab5c3797"
+      "sha256": "6a94cc362e5fa156b3e27f9639cedf6ed5fd46c5d450838ccb84801f3c02a90e"
     },
     {
       "file": "adapter-runtime-contract.test.mjs",
@@ -281,7 +281,7 @@
     },
     {
       "file": "verify-api-contract.mjs",
-      "sha256": "50dac3f06eec574d2062e4c092c0cc96279d5e62333953d5af7be68f195646c9"
+      "sha256": "39f7655b35c83541c08cb341f6616890cb0daee4b4f1a88b188248bd059722d3"
     },
     {
       "file": "verify-adapter-contract.mjs",

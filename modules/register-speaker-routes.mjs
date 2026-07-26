@@ -9,7 +9,7 @@
  *   reconcileSpeakers(meetingId, authContext)      → Promise<result>
  *   backfillSpeakers(meetingId, authContext)       → Promise<result>
  *   reconcileByVoiceCluster(meetingId, body, authContext) → Promise<result>
- *   getAuthContext(req)                            → authContext
+ *   getAuthContext(req)                            → authContext（请求级，req.shengjiAuthContext）
  */
 export function registerSpeakerRoutes(deps) {
   const { readJson, sendJson, renameSpeaker, deleteSpeaker, reconcileSpeakers, backfillSpeakers, reconcileByVoiceCluster, getAuthContext } = deps;

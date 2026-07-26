@@ -8,7 +8,7 @@
  *   searchTranscripts(query, project, authContext) → Promise<result>
  *   insertTranscript(body, authContext)            → Promise<row>
  *   updateTranscript(id, body, authContext)        → Promise<row>
- *   getAuthContext(req)                            → authContext
+ *   getAuthContext(req)                            → authContext（请求级，req.shengjiAuthContext）
  */
 export function registerStateRoutes(deps) {
   const { readJson, sendJson, getState, searchTranscripts, insertTranscript, updateTranscript, getAuthContext } = deps;
