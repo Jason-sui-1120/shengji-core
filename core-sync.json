@@ -256,6 +256,10 @@
     {
       "file": "shared-routes-registered.test.mjs",
       "sha256": "49f695925e7793582d436b0ec23dbb876d516905d7cbc15d527e074f9543709e"
+    },
+    {
+      "file": "adapter-runtime-contract.test.mjs",
+      "sha256": "78331845e8da32170498a122245d3c537615673b8a42937095e3e7df4046b0eb"
     }
   ],
   "scripts": [
@@ -273,7 +277,7 @@
     },
     {
       "file": "verify-api-contract.mjs",
-      "sha256": "bd98724e6528cc2c79c5cfd9319fb277f8b0262a04eea66283310c1ac7fc67bb"
+      "sha256": "50dac3f06eec574d2062e4c092c0cc96279d5e62333953d5af7be68f195646c9"
     },
     {
       "file": "verify-adapter-contract.mjs",
@@ -291,7 +295,7 @@
     },
     {
       "file": "api-contract.json",
-      "sha256": "d644680d1c636b0b638c800d8e16e3994ee52e347acea03130431431db08cc45"
+      "sha256": "b966f95fd13ce8fd8499b757b9eb692988d4337c9c77f0c82a751326fddf205d"
     },
     {
       "file": "adapter-contract.json",

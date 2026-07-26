@@ -68,8 +68,12 @@ async function waitReady(port, timeoutMs = 30_000) {
 
 async function callApi(port, api, cookie) {
   const url = `http://127.0.0.1:${port}${api.path}`;
-  const headers = cookie ? { cookie } : {};
-  const r = await fetch(url, { method: api.method, headers, signal: AbortSignal.timeout(8000) });
+  const headers = { ...(cookie ? { cookie } : {}), ...(api.body ? { "content-type": "application/json" } : {}) };
+  const r = await fetch(url, {
+    method: api.method, headers,
+    body: api.body ? JSON.stringify(api.body) : undefined,
+    signal: AbortSignal.timeout(8000),
+  });
   let body = null;
   try { body = await r.json(); } catch { /* non-json */ }
   return { status: r.status, body };
@@ -129,6 +133,10 @@ async function main() {
       }
       for (const api of contract.apis) {
         if (isExcepted(side, api)) { console.log(`  ⏭  ${api.method} ${api.path}（例外清单豁免）`); continue; }
+        // 用例隔离：DELETE/restore 类用例前先确保 fixture 数据存在（避免前序用例污染）
+        if (api.path.match(/^\/api\/(actions|transcripts)\/\d+/)) {
+          await callApi(port, { method: "POST", path: "/api/actions", body: { meetingId: 1, title: "fixture", owner: "fixture" }, status: [200, 201] }, cookie).catch(() => {});
+        }
         const { status, body } = await callApi(port, api, cookie);
         const allowed = Array.isArray(api.status) ? api.status : [api.status];
         const errors = [];
