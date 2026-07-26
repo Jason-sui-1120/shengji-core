@@ -23,7 +23,8 @@ export function registerFinalizationRoutes(deps) {
       method: "GET",
       pattern: /^\/api\/meetings\/finalization-status$/,
       async handler(req, res, _params, url) {
-        const meetingId = Number(url.searchParams.get("meetingId") || 1);
+        const meetingId = Number(url.searchParams.get("meetingId") || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
         if (!(await canAccess(meetingId, getAuthContext(req)))) { forbidden(res); return; }
         const forceTailFallback = url.searchParams.get("forceTailFallback") === "1";
         sendJson(res, 200, await getFinalizationGate(meetingId, { forceTailFallback }));
@@ -33,7 +34,8 @@ export function registerFinalizationRoutes(deps) {
       method: "GET",
       pattern: /^\/api\/meetings\/finalize-draft\/status$/,
       async handler(req, res, _params, url) {
-        const meetingId = Number(url.searchParams.get("meetingId") || 1);
+        const meetingId = Number(url.searchParams.get("meetingId") || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
         if (!(await canAccess(meetingId, getAuthContext(req)))) { forbidden(res); return; }
         sendJson(res, 200, await getFinalizeDraftJobStatus(meetingId));
       },
@@ -43,7 +45,8 @@ export function registerFinalizationRoutes(deps) {
       pattern: /^\/api\/meetings\/finalize$/,
       async handler(req, res) {
         const body = await readJson(req);
-        const meetingId = Number(body.meetingId || 1);
+        const meetingId = Number(body.meetingId || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
         if (!(await canAccess(meetingId, getAuthContext(req)))) { forbidden(res); return; }
         if (body.finalMinutes) {
           sendJson(res, 200, await saveFinalizedDraft(meetingId, body.finalMinutes, { projectId: body.projectId, moveActions: body.moveActions }));
@@ -57,7 +60,8 @@ export function registerFinalizationRoutes(deps) {
       pattern: /^\/api\/meetings\/finalize-draft$/,
       async handler(req, res) {
         const body = await readJson(req);
-        const meetingId = Number(body.meetingId || 1);
+        const meetingId = Number(body.meetingId || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
         if (!(await canAccess(meetingId, getAuthContext(req)))) { forbidden(res); return; }
         // 归档草稿可能包含分块事实提取和较长模型生成；不能让浏览器请求一直占着，
         // 否则云平台代理会先返回 502/503。任务在服务端完成，前端轮询状态即可。

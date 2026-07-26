@@ -19,7 +19,8 @@ export function registerMeetingExtrasRoutes(deps) {
       method: "GET",
       pattern: /^\/api\/meeting-segments$/,
       async handler(req, res, _params, url) {
-        const meetingId = Number(url.searchParams.get("meetingId") || 1);
+        const meetingId = Number(url.searchParams.get("meetingId") || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
         sendJson(res, 200, await listMeetingSegments(meetingId, getAuthContext(req)));
       },
     },

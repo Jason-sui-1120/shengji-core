@@ -1,5 +1,5 @@
 {
-  "version": "1.4.7",
+  "version": "1.4.8",
   "releasedAt": "2026-07-25",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -157,15 +157,15 @@
     },
     {
       "file": "register-speaker-routes.mjs",
-      "sha256": "b5f9e00725c5ebc86d6d4261ca2ab9b9ebbecfe94b9321835e786bea447fb395"
+      "sha256": "43cdee60a9eb063f61e9aad1cc2f848b34969b73f1c3deb50ec219288844ad8e"
     },
     {
       "file": "register-meeting-extras-routes.mjs",
-      "sha256": "8f5c2be447da576fb1b73b493cdb71f001be00f9548ac4cff83c8bed3b4be306"
+      "sha256": "20fee81b3e2cc28d7cad6d5c0999f4ed56db4ff1e0bed007bd683c5a5922b32c"
     },
     {
       "file": "register-finalization-routes.mjs",
-      "sha256": "bed4c1fdcbca73827804c3569e922ad7acd7481045d0f7e5dc6591ebff46b253"
+      "sha256": "8f0dcd398168afea7090d02571802bb20d14ebb5bede844da5e58a07c5dda3d4"
     },
     {
       "file": "register-state-routes.mjs",
@@ -181,7 +181,7 @@
     },
     {
       "file": "try-shared-routes.mjs",
-      "sha256": "aa671ca812b7376d7dfa9f6665fb44af3d10add0b4f42d8394dd586b7e8f33c3"
+      "sha256": "1969b52353dd54a6c370d24de77d50220aa2c8bccf954b8ca7a4c48b9d27fe2b"
     }
   ],
   "tests": [
@@ -255,7 +255,7 @@
     },
     {
       "file": "shared-routes-registered.test.mjs",
-      "sha256": "6a94cc362e5fa156b3e27f9639cedf6ed5fd46c5d450838ccb84801f3c02a90e"
+      "sha256": "a3fa46a8f4ca463fdd8ea39a5f70e4ba2e2e2469b97083f5dce92b501906ab05"
     },
     {
       "file": "adapter-runtime-contract.test.mjs",

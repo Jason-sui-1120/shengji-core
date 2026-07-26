@@ -35,7 +35,9 @@ export function registerSpeakerRoutes(deps) {
       pattern: /^\/api\/speakers\/reconcile$/,
       async handler(req, res) {
         const body = await readJson(req);
-        sendJson(res, 200, await reconcileSpeakers(Number(body.meetingId || 1), getAuthContext(req)));
+        const meetingId = Number(body.meetingId || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
+        sendJson(res, 200, await reconcileSpeakers(meetingId, getAuthContext(req)));
       },
     },
     {
@@ -43,7 +45,9 @@ export function registerSpeakerRoutes(deps) {
       pattern: /^\/api\/speakers\/backfill$/,
       async handler(req, res) {
         const body = await readJson(req);
-        sendJson(res, 200, await backfillSpeakers(Number(body.meetingId || 1), getAuthContext(req)));
+        const meetingId = Number(body.meetingId || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
+        sendJson(res, 200, await backfillSpeakers(meetingId, getAuthContext(req)));
       },
     },
     {
@@ -51,7 +55,9 @@ export function registerSpeakerRoutes(deps) {
       pattern: /^\/api\/speakers\/reconcile-voice-cluster$/,
       async handler(req, res) {
         const body = await readJson(req);
-        sendJson(res, 200, await reconcileByVoiceCluster(Number(body.meetingId || 1), body, getAuthContext(req)));
+        const meetingId = Number(body.meetingId || 0);
+        if (!Number.isInteger(meetingId) || meetingId <= 0) { sendJson(res, 400, { error: "meetingId required (positive integer)" }); return; }
+        sendJson(res, 200, await reconcileByVoiceCluster(meetingId, body, getAuthContext(req)));
       },
     },
   ];

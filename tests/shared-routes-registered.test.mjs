@@ -25,7 +25,7 @@ async function waitReady(port, timeoutMs = 20_000) {
 
 test("共享路由真正注册：x-shengji-route-source 头证明命中 core 实现", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shengji-route-verify-"));
-  const env = { ...process.env, PORT: String(PORT), NODE_NO_WARNINGS: "1", SHENGJI_ROUTE_SOURCE: "1" };
+  const env = { ...process.env, PORT: String(PORT), NODE_NO_WARNINGS: "1", CONTRACT_TEST_MODE: "1" };
   if (isPublic) env.VOICE_DATA_DIR = tmp;
   if (isCompany) {
     Object.assign(env, {
