@@ -45,6 +45,7 @@ function startServer(side, dir, port) {
       AUTH_MODE: "mock",
       MOCK_USERS: "contract@ke.com:契约测试",
       ADMIN_EMAILS: "contract@ke.com",
+      SKIP_LOCAL_DEFAULT_CHECK: "1", // 契约测试用临时 MySQL，绕过本地默认值校验
     });
   }
   const child = spawn(process.execPath, [...(fs.existsSync(".env") ? ["--env-file=.env"] : []), "server/index.mjs"], {
