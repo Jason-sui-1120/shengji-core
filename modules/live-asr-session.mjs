@@ -99,8 +99,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
   let realtimeSegmentSequence = 0;
-  let lastRealtimeSegmentText = "";
-  let lastRealtimeSegmentEndMs = null;
+  let lastFlushedTranscriptText = "";
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   let pendingAudioChunks = [];
@@ -991,16 +990,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const cleanedSegment = deps.removeFillerWords(segment);
     if (!cleanedSegment) return null;
 
-    // 去重：同一时间窗（±2 秒）内相同文本不重复发送实时预览——
-    // ASR 上游偶尔重复发送 SentenceEnd，导致同一段话显示两次（截图里的 01:41/01:38 重复）。
-    const DEDUPE_WINDOW_MS = 2000;
-    if (lastRealtimeSegmentText === cleanedSegment
-        && lastRealtimeSegmentEndMs !== null
-        && timedStartMs !== null
-        && Math.abs(timedStartMs - lastRealtimeSegmentEndMs) < DEDUPE_WINDOW_MS) {
-      return null;
-    }
-
     // SentenceEnd 是流式模型已经确认的句界。它必须立刻进入客户端时间轴，
     // 而不能只拼进一个"当前正在识别"的气泡，等到 45 秒文件校准才突然出现。
     // 这是仅用于展示的实时预览；真正持久化仍由后续 flush 完成。
@@ -1008,8 +997,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const previewEndMs = Math.max(previewStartMs + 1, timedEndMs ?? getTranscriptAudioOffsetMs());
     if (client.readyState === WebSocket.OPEN) {
       realtimeSegmentSequence += 1;
-      lastRealtimeSegmentText = cleanedSegment;
-      lastRealtimeSegmentEndMs = timedEndMs;
       safeSend({
         type: "transcript.realtime_segment",
         segment: {
@@ -1174,6 +1161,23 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       audioEndMs,
     });
     const timelineLineDrafts = deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality);
+
+    // 内容相似去重：ASR 上游偶尔把不同时间段的相似内容都识别出来（截图里 22:19/21:54
+    // 内容几乎相同）。落库前与上一条比较，相似度超过 85% 则跳过——避免同一段话重复落库。
+    // 用 Jaccard 词级相似度（不依赖外部库）。
+    const lastFlushed = lastFlushedTranscriptText;
+    if (lastFlushed && correctedText) {
+      const wordsA = new Set(correctedText.replace(/\s/g, "").split(""));
+      const wordsB = new Set(lastFlushed.replace(/\s/g, "").split(""));
+      const intersection = new Set([...wordsA].filter((w) => wordsB.has(w)));
+      const union = new Set([...wordsA, ...wordsB]);
+      const similarity = union.size ? intersection.size / union.size : 0;
+      if (similarity > 0.85) {
+        console.log(`[transcript] dedupe skip meeting=${meetingId}: similarity=${similarity.toFixed(2)} with previous flush`);
+        return null;
+      }
+    }
+
     const correctionApplied = deps.normalizeTranscriptSegment(correctedText) !== deps.normalizeTranscriptSegment(text);
     const correctionReason = correctionApplied
       ? (shouldRunLiveCorrection ? "glossary_or_llm" : "glossary")
@@ -1194,6 +1198,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           hotwords,
         }));
       }
+      lastFlushedTranscriptText = correctedText;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[transcript] insert failed meeting=${meetingId}: ${message}`);
