@@ -31,7 +31,7 @@ function hashFile(filePath) {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const targetIdx = args.indexOf("--target");
   const checkMode = args.includes("--check");
@@ -113,7 +113,21 @@ function main() {
       process.exit(1);
     }
 
-    console.log(`✓ core-sync 校验通过：v${manifest.version}，${manifest.modules.length} 模块 + ${manifest.tests.length} 测试哈希一致`);
+    // 哈希一致不代表服务端能启动——import 路径/语法错误时哈希对但 node --check 报错。
+    // --verify-startup 参数时用 node --check 校验 server/index.mjs 语法（不真正启动，避免端口占用）。
+    if (args.includes("--verify-startup")) {
+      const { spawnSync } = await import("node:child_process");
+      const indexPath = join(targetServer, "index.mjs");
+      if (existsSync(indexPath)) {
+        const check = spawnSync(process.execPath, ["--check", indexPath], { encoding: "utf8" });
+        if (check.status !== 0) {
+          console.error(`❌ 服务端语法校验失败（${targetServer}/index.mjs）：\n${check.stderr || check.stdout}`);
+          process.exit(1);
+        }
+      }
+    }
+
+    console.log(`✓ core-sync 校验通过：v${manifest.version}，${manifest.modules.length} 模块 + ${manifest.tests.length} 测试哈希一致${args.includes("--verify-startup") ? "（含服务端语法校验）" : ""}`);
     return;
   }
 
@@ -160,4 +174,4 @@ function main() {
   process.exit(1);
 }
 
-main();
+main().catch((err) => { console.error(err); process.exit(1); });
