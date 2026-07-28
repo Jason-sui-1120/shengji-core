@@ -1162,18 +1162,17 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     });
     const timelineLineDrafts = deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality);
 
-    // 内容相似去重：ASR 上游偶尔把不同时间段的相似内容都识别出来（截图里 22:19/21:54
-    // 内容几乎相同）。落库前与上一条比较，相似度超过 85% 则跳过——避免同一段话重复落库。
-    // 用 Jaccard 词级相似度（不依赖外部库）。
+    // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd（截图里 22:19/21:54 内容几乎相同）。
+    // 落库前与上一条比较，文本几乎完全相同（长度差 <5% 且前缀匹配）则跳过——
+    // 避免同一段话重复落库。严格判断，不误伤正常的新转写。
     const lastFlushed = lastFlushedTranscriptText;
     if (lastFlushed && correctedText) {
-      const wordsA = new Set(correctedText.replace(/\s/g, "").split(""));
-      const wordsB = new Set(lastFlushed.replace(/\s/g, "").split(""));
-      const intersection = new Set([...wordsA].filter((w) => wordsB.has(w)));
-      const union = new Set([...wordsA, ...wordsB]);
-      const similarity = union.size ? intersection.size / union.size : 0;
-      if (similarity > 0.85) {
-        console.log(`[transcript] dedupe skip meeting=${meetingId}: similarity=${similarity.toFixed(2)} with previous flush`);
+      const shorter = correctedText.length < lastFlushed.length ? correctedText : lastFlushed;
+      const longer = correctedText.length < lastFlushed.length ? lastFlushed : correctedText;
+      const isNearDuplicate = longer.startsWith(shorter)
+        && (longer.length - shorter.length) / longer.length < 0.05;
+      if (isNearDuplicate) {
+        console.log(`[transcript] dedupe skip meeting=${meetingId}: near-duplicate of previous flush`);
         return null;
       }
     }
