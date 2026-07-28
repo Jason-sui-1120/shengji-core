@@ -73,6 +73,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return;
   }
   meetingLiveConnections.set(meetingId, client);
+  // WebSocket 连接建立时把 status 更新为 recording——/api/state 的 getCurrentMeetingForUser
+  // 查 status NOT IN ('finalized', 'archived')，找不到正在录音的会议（status 还是 idle）。
+  // ensureMeetingSourceAudio 只更新 source_audio_status，不更新 status 字段。
+  if (typeof deps.setMeetingStatus === "function") {
+    void Promise.resolve(deps.setMeetingStatus(meetingId, "recording")).catch(() => {});
+  }
   // server→client 心跳：浏览器收到 WS ping 会自动回 pong。音频暂停（静音/后台标签页）
   // 时仍有双向流量，防止公司入口网关/nginx 因空闲超时切断长连接（公网 nginx 同理）。
   clientPingTimer = setInterval(() => {
