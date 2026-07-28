@@ -100,7 +100,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
   let realtimeSegmentSequence = 0;
-  let lastFlushedTranscript = null; // { text, audioEndMs }——去重要时间+文本双条件
+  let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs }——去重要区间重叠+文本双条件
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   let pendingAudioChunks = [];
@@ -1027,9 +1027,35 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
   // flush 串行队列：同一会议同一时刻只允许一个 flush 执行（声纹/落库耗时，
   // 并发 flush 会导致落库乱序、去重判断失真）。后续 flush 排队等前一个完成。
+  // 关键：入队前立即冻结不可变快照（文本/时间/音频块/VAD 状态），队列只消费快照——
+  // 防止排队期间后续句子混入共享缓冲导致 B+C 被当作一段处理。
   let flushChain = Promise.resolve();
   function enqueueFlush(reason, options) {
-    flushChain = flushChain.then(() => flushTranscriptBufferInner(reason, options)).catch((err) => {
+    // 入队瞬间冻结快照——后续 SentenceEnd 会写新的 transcriptBuffer，不影响本次 flush。
+    const snapshot = {
+      text: transcriptBuffer,
+      startedAt: transcriptBufferStartedAt,
+      startedAudioMs: transcriptBufferStartedAudioMs,
+      endAudioMs: transcriptBufferEndAudioMs,
+      audioChunks: [...speechAudioChunks],
+      audioBytes: speechAudioBytes,
+      pendingSpeechStart: pendingSpeechStartAt,
+      pendingSpeechStartAudioMs,
+      latestPartial,
+      latestSpeaker: latestSpeakerResult,
+    };
+    // 立即清空活动缓冲——新句子从空 buffer 开始，不与本次 flush 混。
+    transcriptBuffer = "";
+    transcriptBufferStartedAt = "";
+    transcriptBufferStartedAudioMs = 0;
+    transcriptBufferEndAudioMs = 0;
+    pendingSpeechStartAt = "";
+    pendingSpeechStartAudioMs = null;
+    latestPartial = "";
+    speechAudioChunks = [];
+    speechAudioBytes = 0;
+
+    flushChain = flushChain.then(() => flushTranscriptBufferInner(reason, options, snapshot)).catch((err) => {
       console.error(`[transcript] flush chain error meeting=${meetingId}: ${err instanceof Error ? err.message : err}`);
     });
     return flushChain;
@@ -1039,15 +1065,27 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return enqueueFlush(reason, options);
   }
 
-  async function flushTranscriptBufferInner(reason = "endpoint", options = {}) {
+  async function flushTranscriptBufferInner(reason = "endpoint", options = {}, snapshot = null) {
     if (transcriptFlushTimer) {
       clearTimeout(transcriptFlushTimer);
       transcriptFlushTimer = null;
       transcriptFlushReason = "";
     }
-    let text = deps.normalizeTranscriptSegment(transcriptBuffer);
+    // 用快照（入队时冻结的不可变状态），不用全局变量——防止排队期间后续句子混入。
+    const snap = snapshot || {
+      text: transcriptBuffer,
+      startedAt: transcriptBufferStartedAt,
+      startedAudioMs: transcriptBufferStartedAudioMs,
+      endAudioMs: transcriptBufferEndAudioMs,
+      audioChunks: speechAudioChunks,
+      pendingSpeechStart: pendingSpeechStartAt,
+      pendingSpeechStartAudioMs,
+      latestPartial,
+      latestSpeaker: latestSpeakerResult,
+    };
+    let text = deps.normalizeTranscriptSegment(snap.text);
     const usingPartialFallback = !text && Boolean(options.fallbackToPartial);
-    if (usingPartialFallback) text = deps.normalizeTranscriptSegment(latestPartial);
+    if (usingPartialFallback) text = deps.normalizeTranscriptSegment(snap.latestPartial);
     // 快照前缀抑制：与上次兜底落库文本相同或是其前缀扩展时跳过——
     // 这句话仍在进行中，等 SentenceEnd 或更长的停顿再落，避免同一句话
     // 被反复落库成"前缀累积"重复行（英文 LM 快照场景的总根因）。
@@ -1059,13 +1097,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 保存真正的 ASR 原文（normalize 后但未去 filler），用于审计对比
     const rawAsrText = text;
     if (!text) {
-      transcriptBuffer = "";
-      transcriptBufferEndAudioMs = 0;
-      if (pendingSpeechStartAudioMs === null) {
-        transcriptBufferStartedAt = "";
-        transcriptBufferStartedAudioMs = 0;
-      }
-      latestPartial = "";
       return null;
     }
     // 最终落库前再次清理 filler
@@ -1077,16 +1108,16 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       latestPartial = "";
       return null;
     }
-    const startedAt = transcriptBufferStartedAt || getTranscriptTimeLabel();
+    const startedAt = snap.startedAt || getTranscriptTimeLabel();
     // 0 是合法的会议起始时间，不能用 || 把它误判成“未设置”，否则首段
     // 会被错误地标到当前音频位置，后续文件 ASR 对齐会整体偏移。
-    const audioStartMs = transcriptBufferStartedAt
-      ? Number(transcriptBufferStartedAudioMs || 0)
+    const audioStartMs = snap.startedAt
+      ? Number(snap.startedAudioMs || 0)
       : getTranscriptAudioOffsetMs();
-    const currentAudioChunks = speechAudioChunks;
+    const currentAudioChunks = snap.audioChunks;
     const quality = deps.analyzePcmQuality(currentAudioChunks);
     const measuredEndMs = getTranscriptAudioOffsetMs();
-    const timedEndMs = Number(transcriptBufferEndAudioMs || 0);
+    const timedEndMs = Number(snap.endAudioMs || 0);
     const audioEndMs = timedEndMs > 0
       ? Math.max(audioStartMs, timedEndMs)
       : Math.max(audioStartMs, audioStartMs + Math.max(0, Number(quality.durationMs || 0)), measuredEndMs);
@@ -1098,25 +1129,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     } catch { /* 词库不可用时保留原文 */ }
     if (usingPartialFallback) {
       lastPartialFlushText = text;
-      lastPartialFlushAudioStartMs = transcriptBufferStartedAt
-        ? Number(transcriptBufferStartedAudioMs || 0)
+      lastPartialFlushAudioStartMs = snap.startedAt
+        ? Number(snap.startedAudioMs || 0)
         : getTranscriptAudioOffsetMs();
     } else {
       // 正常 flush（SentenceEnd 进 buffer）说明快照句子已终结，重置快照跟踪。
       lastPartialFlushText = "";
       lastPartialFlushAudioStartMs = 0;
     }
-    transcriptBuffer = "";
-    transcriptBufferStartedAt = "";
-    transcriptBufferStartedAudioMs = 0;
-    transcriptBufferEndAudioMs = 0;
-    pendingSpeechStartAt = "";
-    pendingSpeechStartAudioMs = null;
-    latestPartial = "";
-    speechAudioChunks = [];
-    speechAudioBytes = 0;
-    pendingAudioChunks = [];
-    pendingAudioBytes = 0;
+    // 全局缓冲已在入队时清空（enqueueFlush 里），这里不再重置。
     if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "status", status: "correcting", reason }));
     let audioPath = "";
     let wav = null;
@@ -1178,17 +1199,27 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const timelineLineDrafts = deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality);
 
     // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd。
-    // 双条件：时间重叠（audioStartMs 与上一条结束时间差 <2 秒）+ 文本近似（前缀匹配且长度差 <5%）。
-    // 只看文本会误杀两分钟后的正常重复"好的/对/可以"；只看时间可能漏掉同一段的重复识别。
+    // 双条件：两个音频区间重叠比例 >80% + 文本近似（前缀匹配且长度差 <5%）。
+    // 反例 1：真正重复 [10s,14s] 又来一次 [10s,14s]——重叠 100%，去重。
+    // 反例 2：两人紧接着说"好的" [10s,11s]、[11.2s,12s]——重叠 0%，不去重。
     const lastFlushed = lastFlushedTranscript;
     if (lastFlushed && correctedText) {
       const shorter = correctedText.length < lastFlushed.text.length ? correctedText : lastFlushed.text;
       const longer = correctedText.length < lastFlushed.text.length ? lastFlushed.text : correctedText;
       const textSimilar = longer.startsWith(shorter)
         && (longer.length - shorter.length) / longer.length < 0.05;
-      const timeOverlap = Math.abs(Number(audioStartMs || 0) - Number(lastFlushed.audioEndMs || 0)) < 2000;
-      if (textSimilar && timeOverlap) {
-        console.log(`[transcript] dedupe skip meeting=${meetingId}: near-duplicate in time window`);
+      // 区间重叠比例：交集长度 / 较短区间长度
+      const lastStart = Number(lastFlushed.audioStartMs || 0);
+      const lastEnd = Number(lastFlushed.audioEndMs || 0);
+      const curStart = Number(audioStartMs || 0);
+      const curEnd = Number(audioEndMs || 0);
+      const overlapStart = Math.max(lastStart, curStart);
+      const overlapEnd = Math.min(lastEnd, curEnd);
+      const overlapMs = Math.max(0, overlapEnd - overlapStart);
+      const shorterDuration = Math.min(lastEnd - lastStart, curEnd - curStart);
+      const overlapRatio = shorterDuration > 0 ? overlapMs / shorterDuration : 0;
+      if (textSimilar && overlapRatio > 0.8) {
+        console.log(`[transcript] dedupe skip meeting=${meetingId}: overlap=${(overlapRatio * 100).toFixed(0)}% with previous flush`);
         return null;
       }
     }
@@ -1213,7 +1244,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           hotwords,
         }));
       }
-      lastFlushedTranscript = { text: correctedText, audioEndMs };
+      lastFlushedTranscript = { text: correctedText, audioStartMs, audioEndMs };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[transcript] insert failed meeting=${meetingId}: ${message}`);
