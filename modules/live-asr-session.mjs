@@ -99,6 +99,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
   let realtimeSegmentSequence = 0;
+  let lastRealtimeSegmentText = "";
+  let lastRealtimeSegmentEndMs = null;
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   let pendingAudioChunks = [];
@@ -988,13 +990,26 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 清理 filler 词
     const cleanedSegment = deps.removeFillerWords(segment);
     if (!cleanedSegment) return null;
+
+    // 去重：同一时间窗（±2 秒）内相同文本不重复发送实时预览——
+    // ASR 上游偶尔重复发送 SentenceEnd，导致同一段话显示两次（截图里的 01:41/01:38 重复）。
+    const DEDUPE_WINDOW_MS = 2000;
+    if (lastRealtimeSegmentText === cleanedSegment
+        && lastRealtimeSegmentEndMs !== null
+        && timedStartMs !== null
+        && Math.abs(timedStartMs - lastRealtimeSegmentEndMs) < DEDUPE_WINDOW_MS) {
+      return null;
+    }
+
     // SentenceEnd 是流式模型已经确认的句界。它必须立刻进入客户端时间轴，
-    // 而不能只拼进一个“当前正在识别”的气泡，等到 45 秒文件校准才突然出现。
+    // 而不能只拼进一个"当前正在识别"的气泡，等到 45 秒文件校准才突然出现。
     // 这是仅用于展示的实时预览；真正持久化仍由后续 flush 完成。
     const previewStartMs = timedStartMs ?? pendingSpeechStartAudioMs ?? getTranscriptAudioOffsetMs();
     const previewEndMs = Math.max(previewStartMs + 1, timedEndMs ?? getTranscriptAudioOffsetMs());
     if (client.readyState === WebSocket.OPEN) {
       realtimeSegmentSequence += 1;
+      lastRealtimeSegmentText = cleanedSegment;
+      lastRealtimeSegmentEndMs = timedEndMs;
       safeSend({
         type: "transcript.realtime_segment",
         segment: {
