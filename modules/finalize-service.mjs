@@ -15,6 +15,10 @@ import { AIT_FINAL_MODEL, ROLLING_ASR_TIMEOUT_MS } from "./config.mjs";
  * 业务逻辑两端共用。
  */
 export class FinalizeService {
+  // 按会议 ID 单飞锁（不同会议可并行，同一会议重复调用返回进行中）。
+  // 静态属性：两端各自实例化 FinalizeService，但锁共享——同一进程内全局唯一。
+  static _finalizeInProgress = new Set();
+
   constructor(store, aiCalls = {}) {
     this.store = store;
     // 允许调用方覆盖 store 的复杂方法（getProjectHistoricalContext/saveFinalizedMeeting
@@ -35,8 +39,22 @@ export class FinalizeService {
   /**
    * 会后归档主流程（迁移 finalizeMeetingInner 共同核心）。
    * 归档等待 → 覆盖补齐 → 数据获取 → 分块证据 → 纪要生成 → 保存。
+   * 按会议 ID 单飞：同一会议重复调用返回进行中，不同会议可并行。
    */
   async finalizeMeeting(meetingId, options = { save: true }) {
+    const key = Number(meetingId || 0);
+    if (this.constructor._finalizeInProgress.has(key)) {
+      return { ok: false, message: "该会议归档正在进行中，请稍后重试" };
+    }
+    this.constructor._finalizeInProgress.add(key);
+    try {
+      return await this._finalizeMeetingInner(meetingId, options);
+    } finally {
+      this.constructor._finalizeInProgress.delete(key);
+    }
+  }
+
+  async _finalizeMeetingInner(meetingId, options = { save: true }) {
     const startedAt = Date.now();
     if (!hasAiAccess()) {
       return { ok: false, message: "AI gateway or AIT_API_KEY is not configured" };
