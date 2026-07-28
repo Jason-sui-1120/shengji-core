@@ -651,11 +651,23 @@ export function loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudio
 export function ensureMeetingSourceAudio(meetingId, options = {}, openDb) {
   const key = Number(meetingId || 0);
   const audioPath = getMeetingSourceAudioPath(key);
+  const db = openDb();
+
+  // 服务重启后优先从数据库恢复已持久化字节数——音频文件可能丢失（data/audio 被清理），
+  // 但数据库的 source_audio_bytes 是权威记录（每次 append 都会 UPDATE）。
+  // 文件 stat 只作兜底（数据库无记录时）。
+  const dbRow = db.prepare("SELECT source_audio_bytes AS bytes FROM meetings WHERE id = ? AND deleted_at IS NULL").get(key);
+  const dbBytes = Math.max(0, Number(dbRow?.bytes || 0));
+
   if (!fs.existsSync(audioPath)) {
     fs.writeFileSync(audioPath, wrapPcm16AsWav(Buffer.alloc(0), 16000));
   }
   const stat = fs.statSync(audioPath);
-  const bytes = Math.max(0, Number(stat.size || 0) - WAV_HEADER_BYTES);
+  const fileBytes = Math.max(0, Number(stat.size || 0) - WAV_HEADER_BYTES);
+
+  // 取数据库与文件的较大值——数据库记录通常更新（文件可能丢失后被重建为空文件）。
+  const bytes = Math.max(dbBytes, fileBytes);
+
   const existing = meetingSourceAudioWrites.get(key);
   const state = existing && existing.audioPath === audioPath
     ? existing
@@ -663,7 +675,6 @@ export function ensureMeetingSourceAudio(meetingId, options = {}, openDb) {
   state.bytes = Math.max(Number(state.bytes || 0), bytes);
   state.scheduledBytes = Math.max(Number(state.scheduledBytes ?? state.bytes ?? 0), state.bytes);
   meetingSourceAudioWrites.set(key, state);
-  const db = openDb();
   // 只有建立新的录音连接时才重新标记为 recording。普通读取/封存调用不会
   // 改写状态；这样同一会议暂停后恢复时，页面不会仍显示 complete。
   const existingStatus = db.prepare("SELECT source_audio_status AS status FROM meetings WHERE id = ? AND deleted_at IS NULL").get(key)?.status;
