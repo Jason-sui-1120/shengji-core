@@ -63,7 +63,8 @@ async function startServer(extraEnv = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shengji-route-verify-"));
   const env = {
     ...process.env,
-    PORT: String(PORT), NODE_NO_WARNINGS: "1", CONTRACT_TEST_MODE: "1",
+    PORT: String(PORT), API_PORT: String(PORT), // .env 里的 API_PORT 会覆盖 PORT，两个都设
+    NODE_NO_WARNINGS: "1", CONTRACT_TEST_MODE: "1",
     SKIP_LOCAL_DEFAULT_CHECK: "1",
     ...extraEnv,
   };
