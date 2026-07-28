@@ -80,8 +80,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       try { client.ping(); } catch { /* gone */ }
     }
   }, 25_000);
-  const requestedModel = clientUrl.searchParams.get("model") || "";
-  const model = deps.resolveRequestedAsrModel(requestedModel, deps.config.AIT_ASR_MODEL);
+  // 无用户模型选择 UI——前端不传 model 参数，直接用 AIT_ASR_MODEL 配置（models.json 权威值）。
+  // 避免"前端读配置→传回后端→后端再用配置"的循环引用。
+  const model = deps.config.AIT_ASR_MODEL;
   const upstreamUrl = deps.getAsrUpstreamUrl(model);
   let upstreamTaskId = randomUUID();
   let upstreamOpen = false;
