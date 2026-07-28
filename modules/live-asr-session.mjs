@@ -86,6 +86,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       try { client.ping(); } catch { /* gone */ }
     }
   }, 25_000);
+  // 定期发送当前音频偏移量（累计会议时长）——前端 elapsed 用这个值，
+  // 不依赖 /api/state 的 elapsedSeconds（录音过程中不更新，只有 pause/seal 才写）。
+  const audioOffsetTimer = setInterval(() => {
+    if (client.readyState === WebSocket.OPEN) {
+      safeSend({ type: "status", status: "audio_offset", audioOffsetMs: getTranscriptAudioOffsetMs() });
+    }
+  }, 5000);
   // 无用户模型选择 UI——前端不传 model 参数，直接用 AIT_ASR_MODEL 配置（models.json 权威值）。
   // 避免"前端读配置→传回后端→后端再用配置"的循环引用。
   const model = deps.config.AIT_ASR_MODEL;
@@ -544,6 +551,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
   client.on("close", () => {
     clearInterval(clientPingTimer);
+    clearInterval(audioOffsetTimer);
     // 清理连接锁，允许后续重连
     if (meetingLiveConnections.get(meetingId) === client) meetingLiveConnections.delete(meetingId);
     if (transcriptFlushTimer) {
