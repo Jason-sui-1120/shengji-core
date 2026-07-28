@@ -100,7 +100,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
   let realtimeSegmentSequence = 0;
-  let lastFlushedTranscriptText = "";
+  let lastFlushedTranscript = null; // { text, audioEndMs }——去重要时间+文本双条件
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   let pendingAudioChunks = [];
@@ -1025,7 +1025,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     return null;
   }
 
+  // flush 串行队列：同一会议同一时刻只允许一个 flush 执行（声纹/落库耗时，
+  // 并发 flush 会导致落库乱序、去重判断失真）。后续 flush 排队等前一个完成。
+  let flushChain = Promise.resolve();
+  function enqueueFlush(reason, options) {
+    flushChain = flushChain.then(() => flushTranscriptBufferInner(reason, options)).catch((err) => {
+      console.error(`[transcript] flush chain error meeting=${meetingId}: ${err instanceof Error ? err.message : err}`);
+    });
+    return flushChain;
+  }
+
   async function flushTranscriptBuffer(reason = "endpoint", options = {}) {
+    return enqueueFlush(reason, options);
+  }
+
+  async function flushTranscriptBufferInner(reason = "endpoint", options = {}) {
     if (transcriptFlushTimer) {
       clearTimeout(transcriptFlushTimer);
       transcriptFlushTimer = null;
@@ -1163,17 +1177,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     });
     const timelineLineDrafts = deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality);
 
-    // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd（截图里 22:19/21:54 内容几乎相同）。
-    // 落库前与上一条比较，文本几乎完全相同（长度差 <5% 且前缀匹配）则跳过——
-    // 避免同一段话重复落库。严格判断，不误伤正常的新转写。
-    const lastFlushed = lastFlushedTranscriptText;
+    // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd。
+    // 双条件：时间重叠（audioStartMs 与上一条结束时间差 <2 秒）+ 文本近似（前缀匹配且长度差 <5%）。
+    // 只看文本会误杀两分钟后的正常重复"好的/对/可以"；只看时间可能漏掉同一段的重复识别。
+    const lastFlushed = lastFlushedTranscript;
     if (lastFlushed && correctedText) {
-      const shorter = correctedText.length < lastFlushed.length ? correctedText : lastFlushed;
-      const longer = correctedText.length < lastFlushed.length ? lastFlushed : correctedText;
-      const isNearDuplicate = longer.startsWith(shorter)
+      const shorter = correctedText.length < lastFlushed.text.length ? correctedText : lastFlushed.text;
+      const longer = correctedText.length < lastFlushed.text.length ? lastFlushed.text : correctedText;
+      const textSimilar = longer.startsWith(shorter)
         && (longer.length - shorter.length) / longer.length < 0.05;
-      if (isNearDuplicate) {
-        console.log(`[transcript] dedupe skip meeting=${meetingId}: near-duplicate of previous flush`);
+      const timeOverlap = Math.abs(Number(audioStartMs || 0) - Number(lastFlushed.audioEndMs || 0)) < 2000;
+      if (textSimilar && timeOverlap) {
+        console.log(`[transcript] dedupe skip meeting=${meetingId}: near-duplicate in time window`);
         return null;
       }
     }
@@ -1198,7 +1213,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           hotwords,
         }));
       }
-      lastFlushedTranscriptText = correctedText;
+      lastFlushedTranscript = { text: correctedText, audioEndMs };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[transcript] insert failed meeting=${meetingId}: ${message}`);
