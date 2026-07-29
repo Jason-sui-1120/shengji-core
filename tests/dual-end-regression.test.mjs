@@ -1,11 +1,23 @@
 // 双端同输入回归测试：单人长讲述 / 多人交替与抢话 / 弱网重连与停止。
 // 用合成固定输入驱动核心模块（transcript-composer / transcript-coverage / speaker-timeline），
 // 验证时间轴单调性、稳定稿覆盖率、重复率——两端跑同一输入，输出必须一致。
+// 注意：core 里 modules 在 ../modules/，消费端 modules 在 ./（与测试同级）。
+// 动态检测：先尝试 ../modules/（core），失败则 ./（消费端）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composeCanonicalFileSegments } from "../modules/transcript-composer.mjs";
-import { computeTranscriptCoverage } from "../modules/transcript-coverage.mjs";
-import { buildAbsoluteSpeakerSegments } from "../modules/speaker-timeline.mjs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { existsSync } from "node:fs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const coreModulesDir = path.join(__dirname, "..", "modules");
+const consumerModulesDir = __dirname;
+const modulesDir = existsSync(path.join(coreModulesDir, "transcript-composer.mjs"))
+  ? coreModulesDir
+  : consumerModulesDir;
+const { composeCanonicalFileSegments } = await import(path.join(modulesDir, "transcript-composer.mjs"));
+const { computeTranscriptCoverage } = await import(path.join(modulesDir, "transcript-coverage.mjs"));
+const { buildAbsoluteSpeakerSegments } = await import(path.join(modulesDir, "speaker-timeline.mjs"));
 
 // ─── 固定输入 1：单人长讲述 ──────────────────────────────────────────────────
 const SINGLE_SPEAKER = {
