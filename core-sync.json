@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "releasedAt": "2026-07-25",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -65,7 +65,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "459c2dcf53211395123e7f66b413c08a0120ee55bccdc52e78ba82bfd68ce155"
+      "sha256": "74c7767dd8ce29e31761af5bb3c939dcfcd91afedf7bdcb91f601860ca68a116"
     },
     {
       "file": "model-routing.mjs",

@@ -651,10 +651,19 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         // 文件 ASR 的后台重试只适合会中窗口；会后立即以现有实时稿收口，
         // 同时保留完整录音供回听和后续修复，最终纪要永远有可用输入。
         const forced = await forceStabilizeDraftTranscripts(meetingId);
+        // 结构化尾段降级状态：尾段文件 ASR 超时必须在限定时间后自动进入"草稿可归档"状态，
+        // 不能永久卡住。失败原因和重试次数在服务端可查询。
+        const tailFailureCode = retriesResolved ? "tail_asr_timeout" : "tail_asr_retry_exhausted";
+        const tailFailureReason = retriesResolved
+          ? "尾段文件 ASR 超时，已用实时稿收口"
+          : `尾段文件 ASR 重试 ${failedRollingWindows.length} 次仍失败，已用实时稿收口`;
         safeSend({
           type: "status",
           status: "sealed",
           forcedStableCount: forced,
+          tailFailureCode,
+          tailFailureReason,
+          tailFailedWindows: failedRollingWindows.length,
           message: forced > 0
             ? `尾段文件校准未完成，已用 ${forced} 条实时稿收口`
             : "尾段文件校准未完成，已保留现有稳定稿并收口",
@@ -840,6 +849,20 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const message = error instanceof Error ? error.message : String(error);
       const pendingAudio = Buffer.concat(rollingAudioChunks);
       // 失败窗口独立保留重试，不能再拼回实时缓冲；否则等待期间新增音频会让下一次请求无限变大。
+      // 结构化失败状态：rolling 文件 ASR 失败必须分别有状态码和原因（超时/LLM 失败/队列满），
+      // 前端同一类失败只提示一次或合并计数，不得刷屏。
+      let failureCode = "rolling_asr_failed";
+      let failureReason = message;
+      if (message.includes("timeout") || message.includes("timed out")) {
+        failureCode = "rolling_asr_timeout";
+        failureReason = "文件 ASR 超时";
+      } else if (message.includes("queue") || message.includes("too many")) {
+        failureCode = "rolling_asr_queue_full";
+        failureReason = "文件 ASR 队列满";
+      } else if (message.includes("llm") || message.includes("alignment")) {
+        failureCode = "rolling_llm_alignment_failed";
+        failureReason = "LLM 对齐失败";
+      }
       if (pcm.length) {
         // 失败窗口最多保留 3 个（音频在源录音里本来就有，重试失败可从源音频重建）。
         // AIT 持续故障时无上限堆积 PCM 会把进程内存吃光。
@@ -857,8 +880,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           sourceSpeechIntervals: plan.speechIntervals,
           forcedBoundary: plan.forcedBoundary,
           attempt: 0,
+          failureCode,
+          failureReason,
+          failedAt: Date.now(),
         });
       }
+      safeSend({ type: "status", status: "rolling_correction_failed", windowStartAudioMs, windowEndAudioMs, failureCode, failureReason });
       const retryStartMs = Math.max(windowStartAudioMs, deps.findRollingContextStart({
         commitStartMs: plan.commitStartMs,
         speechIntervals: plan.speechIntervals,
