@@ -33,7 +33,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   }
   if (!deps.hasAiAccess()) {
     client.send(JSON.stringify({ type: "error", message: "AI gateway or AIT_API_KEY is not configured" }));
-    client.close(1011, "missing api key");
+    client.close(3000, "missing api key");
     return;
   }
 
@@ -69,7 +69,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   if (existingConnection && existingConnection.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify({ type: "error", message: "该会议已有活跃的录音连接，请先结束现有录音" }));
     cleanupEarlyExit();
-    client.close(1011, "meeting already has an active connection");
+    client.close(3000, "meeting already has an active connection");
     return;
   }
   meetingLiveConnections.set(meetingId, client);
@@ -344,7 +344,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         const messageText = message?.header?.status_message || "ASR failed";
         console.error(`[asr] upstream task failed meeting=${meetingId}: ${messageText}`);
         safeSend({ type: "status", status: "upstream_reconnecting", reason: messageText });
-        if (current.readyState === WebSocket.OPEN) current.close(1011, "task failed");
+        if (current.readyState === WebSocket.OPEN) current.close(3000, "task failed");
         scheduleUpstreamReconnect("task_failed");
         return;
       }
