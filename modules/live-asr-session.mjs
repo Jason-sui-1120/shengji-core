@@ -589,6 +589,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     }
     deps.beginMeetingAiJob(meetingId);
     sealingPromise = (async () => {
+      // P0.3：从用户点击结束开始设置唯一绝对 deadline（60-75 秒）。
+      // 滚动文件 ASR、轮询、LLM 对齐、重试均接受 AbortSignal。
+      const tailDeadlineMs = 70_000; // 70 秒绝对截止时间
+      const tailDeadline = Date.now() + tailDeadlineMs;
+      const tailAbortController = new AbortController();
+      const tailAbortSignal = tailAbortController.signal;
+      // deadline 到达后立即取消本轮未完成任务
+      const tailDeadlineTimer = setTimeout(() => {
+        console.error(`[seal] tail deadline reached meeting=${meetingId}，取消本轮未完成任务`);
+        tailAbortController.abort();
+      }, tailDeadlineMs);
+
       await flushTranscriptBuffer(reason, { fallbackToPartial: true });
       // 在真正开始尾段文件 ASR 前先持久化中间状态。这样即使 WebSocket、Pod
       // 或上游请求在中途失联，服务端门禁也能识别为“待收口”并走超时兜底；
@@ -605,10 +617,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // 音频/上游调用一直不返回，之前的单窗 timeout 不能保证 sealMeeting 返回，
       // 前端便会永久停在“尾段校准中”。超时后保留已经产出的稳定稿，并由下方
       // forced-stable 兜底收口，完整源录音仍保留，后续可再次校准。
+      // P0.3：triggerRollingCorrection 接受 AbortSignal（deadline 到达后立即取消）。
       let tailDrainCompleted = true;
       try {
         await withTimeout(
-          triggerRollingCorrection(true),
+          triggerRollingCorrection(true, tailAbortSignal),
           config.TAIL_STABILIZATION_TIMEOUT_MS,
           "tail_stabilization_total",
         );
@@ -617,12 +630,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         console.error(`[seal] tail stabilization timed out meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
       const retriesResolved = tailDrainCompleted && failedRollingWindows.length === 0;
-      // 等待正在运行的 rolling correction 完成，避免 draftCount 统计不准
+      // P0.3：deadline 到达后不再额外无条件等待 120 秒——立即取消本轮未完成任务。
       if (rollingCorrectionRunning || rollingRetryRunning) {
-        // sealMeeting 自身就是一个进行中的任务。这里只等待并行的滚动校准/重试，
-        // 不能把自身也算进“待完成任务”，否则必定等到 120 秒超时。
-        await deps.waitForMeetingAiJobs(meetingId, 120_000, 1);
+        if (Date.now() >= tailDeadline) {
+          console.error(`[seal] tail deadline reached meeting=${meetingId}，跳过 waitForMeetingAiJobs（立即收口）`);
+        } else {
+          // sealMeeting 自身就是一个进行中的任务。这里只等待并行的滚动校准/重试，
+          // 不能把自身也算进“待完成任务”，否则必定等到 120 秒超时。
+          const remainingMs = Math.max(0, tailDeadline - Date.now());
+          await deps.waitForMeetingAiJobs(meetingId, Math.min(remainingMs, 10_000), 1);
+        }
       }
+      clearTimeout(tailDeadlineTimer);
       await deps.finalizeMeetingSourceAudio(meetingId, reason === "stop" ? "complete" : "partial");
       // 完整录音封存后再做一次会议级说话人校准。它不影响文字稳定化，但
       // 最终纪要必须使用这次校准后的说话人轨道，而不是窗口临时标签。
@@ -761,8 +780,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     };
   }
 
-  async function triggerRollingCorrection(isFinal, attempt = 0) {
+  async function triggerRollingCorrection(isFinal, abortSignal = null, attempt = 0) {
     if (!deps.config.ROLLING_ASR_ENABLED) return null;
+    // P0.3：deadline 到达后立即取消（AbortSignal）
+    if (abortSignal?.aborted) {
+      console.log(`[rolling-asr] aborted before start meeting=${meetingId}`);
+      return null;
+    }
     if (rollingCorrectionRunning || rollingRetryRunning) {
       if (isFinal) rollingFinalRequested = true;
       if (!isFinal) rollingCorrectionQueued = true;
@@ -803,6 +827,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const submittedDurationSeconds = Number((pcm.length / (16000 * 2)).toFixed(1));
       console.log(`[rolling-asr] submitting meeting=${meetingId} duration=${submittedDurationSeconds}s start=${correctionStartId} end=${correctionEndId}`);
       safeSend({ type: "status", status: "rolling_correction", model: deps.config.ROLLING_ASR_MODEL, submittedDurationSeconds });
+      // P0.3：performRollingTranscriptCorrection 接受 AbortSignal（deadline 到达后立即取消）
       const correctionPromise = deps.performRollingTranscriptCorrection({
         meetingId,
         pcm,
@@ -818,6 +843,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         sourceSpeechIntervals: plan.speechIntervals,
         forcedBoundary: plan.forcedBoundary,
         allowBoundaryRows: Boolean(isFinal),
+        abortSignal,
       });
       const result = await withTimeout(
         correctionPromise,
