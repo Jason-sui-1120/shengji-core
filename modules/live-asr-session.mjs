@@ -145,7 +145,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let latestSpeakerResult = null;
   // 会议时间轴只由已经持久化的 PCM 样本数决定。elapsed_seconds 是展示缓存，
   // 不能再和源 WAV 时长相加，否则暂停/断线后恢复会把旧时长重复计算。
-  const sourceAudioState = deps.ensureMeetingSourceAudio(meetingId, { markRecording: true });
+  // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
+  const sourceAudioState = await Promise.resolve(deps.ensureMeetingSourceAudio(meetingId, { markRecording: true }));
   const sessionAudioBaseBytes = Math.max(0, Number(sourceAudioState.scheduledBytes ?? sourceAudioState.bytes ?? 0));
   const sessionAudioBaseMs = Math.round(sessionAudioBaseBytes / (16000 * 2) * 1000);
   const sessionAudioBaseSample = Math.floor(sessionAudioBaseBytes / 2);
@@ -247,7 +248,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // 从数据库查询项目热词，传入 ASR 识别时生效
       let hotwordText = "";
       try {
-        const allTerms = deps.getAsrHotwordsForMeeting(meetingId);
+        // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
+        const allTerms = await Promise.resolve(deps.getAsrHotwordsForMeeting(meetingId));
         if (allTerms.length) hotwordText = allTerms.join(",");
       } catch { /* ignore glossary errors */ }
 
@@ -1173,7 +1175,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     let hotwords = [];
     let glossaryEntries = [];
     try {
-      glossaryEntries = deps.getMeetingGlossaryEntries(meetingId);
+      // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
+      glossaryEntries = await Promise.resolve(deps.getMeetingGlossaryEntries(meetingId));
       hotwords = deps.uniqueStrings(glossaryEntries.flatMap((entry) => [entry.term, ...(entry.aliases || [])]).filter(Boolean)).slice(0, 100);
     } catch { /* 词库不可用时保留原文 */ }
     if (usingPartialFallback) {
@@ -1247,7 +1250,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       audioStartMs,
       audioEndMs,
     });
-    const timelineLineDrafts = deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality);
+    // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
+    const timelineLineDrafts = await Promise.resolve(deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality));
 
     // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd。
     // 双条件：两个音频区间重叠比例 >80% + 文本近似（前缀匹配且长度差 <5%）。
