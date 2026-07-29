@@ -1046,11 +1046,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let flushChain = Promise.resolve();
   function enqueueFlush(reason, options) {
     // 入队瞬间冻结快照——后续 SentenceEnd 会写新的 transcriptBuffer，不影响本次 flush。
+    // capturedAtAudioMs：入队时的当前音频偏移量——flushTranscriptBufferInner 在缺少 ASR 句尾时间戳时
+    // 只能用快照的 capturedAtAudioMs（不是排队任务真正执行时的当前会议时间），防止前一段耗时较长时
+    // 扩大前一段时间区间（影响稳定稿对齐、去重和回放定位）。
     const snapshot = {
       text: transcriptBuffer,
       startedAt: transcriptBufferStartedAt,
       startedAudioMs: transcriptBufferStartedAudioMs,
       endAudioMs: transcriptBufferEndAudioMs,
+      capturedAtAudioMs: getTranscriptAudioOffsetMs(),
       audioChunks: [...speechAudioChunks],
       audioBytes: speechAudioBytes,
       pendingSpeechStart: pendingSpeechStartAt,
@@ -1130,11 +1134,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       : getTranscriptAudioOffsetMs();
     const currentAudioChunks = snap.audioChunks;
     const quality = deps.analyzePcmQuality(currentAudioChunks);
-    const measuredEndMs = getTranscriptAudioOffsetMs();
+    // 缺少 ASR 句尾时间戳时，只能用快照的 capturedAtAudioMs（入队时冻结）——
+    // 禁止用排队任务真正执行时的当前会议时间（getTranscriptAudioOffsetMs()），
+    // 防止前一段耗时较长时扩大前一段时间区间。
+    const capturedAtAudioMs = Number(snap.capturedAtAudioMs || 0);
     const timedEndMs = Number(snap.endAudioMs || 0);
+    const pcmDerivedEndMs = audioStartMs + Math.max(0, Number(quality.durationMs || 0));
     const audioEndMs = timedEndMs > 0
       ? Math.max(audioStartMs, timedEndMs)
-      : Math.max(audioStartMs, audioStartMs + Math.max(0, Number(quality.durationMs || 0)), measuredEndMs);
+      : Math.max(audioStartMs, pcmDerivedEndMs, capturedAtAudioMs);
     let hotwords = [];
     let glossaryEntries = [];
     try {
@@ -1164,7 +1172,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
     // 会中草稿只做确定性的词库修正；稳定版本由滚动文件转写统一校准。
     let correctedText = deps.applyGlossaryAliasCorrections(text, glossaryEntries) || text;
-    let speakerResult = latestSpeakerResult;
+    // 说话人兜底值用快照的 latestSpeaker（入队时冻结）——不是全局 latestSpeakerResult（可能已被后续段更新），
+    // 防止后续段的说话人状态泄漏到前一段。
+    let speakerResult = snap.latestSpeaker || latestSpeakerResult;
 
     // 逐句 LLM 纠错和说话人分离会与稳定校准重复。声纹仅低频采样，保留最近可靠说话人作草稿标注。
     const textCompact = text.replace(/\s/g, "");
@@ -1177,7 +1187,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
     const [correction, speaker, diarization] = await Promise.allSettled([
       shouldRunLiveCorrection ? deps.correctTranscriptText({ meetingId, text }) : Promise.resolve(correctedText),
-      shouldIdentifySpeaker ? deps.identifySpeakerFromAudio({ meetingId, wav, audioPath }) : Promise.resolve(latestSpeakerResult),
+      shouldIdentifySpeaker ? deps.identifySpeakerFromAudio({ meetingId, wav, audioPath }) : Promise.resolve(snap.latestSpeaker || latestSpeakerResult),
       shouldRunDiarization ? deps.diarizeSpeakerSegments({ meetingId, wav, audioPath }) : Promise.resolve([]),
     ]);
     if (correction.status === "fulfilled") {
