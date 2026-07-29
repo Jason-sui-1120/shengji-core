@@ -733,6 +733,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       `).run(stableRevision, Number(meetingIdParam));
       db.exec("COMMIT");
       db.close();
+      // P1：尾段强制稳定也调 afterStableCorrection（稳定稿版本变化唯一事件）
+      if (typeof deps.afterStableCorrection === "function") {
+        await deps.afterStableCorrection(meetingIdParam, stableRevision);
+      }
       deps.scheduleServerAutoAnalyze(meetingIdParam, stableRevision);
       console.log(`[seal] force stabilized ${draftRows.length} draft transcripts meeting=${meetingIdParam}`);
       return draftRows.length;
