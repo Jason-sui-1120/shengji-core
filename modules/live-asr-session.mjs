@@ -242,7 +242,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     started = false;
     upstreamTaskId = randomUUID();
 
-    current.on("open", () => {
+    current.on("open", async () => {
       if (current !== upstream || upstreamStopped) return;
       upstreamOpen = true;
       // 从数据库查询项目热词，传入 ASR 识别时生效
