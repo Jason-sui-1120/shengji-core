@@ -8,6 +8,21 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { audioDir } from "./env.mjs";
 import { wrapPcm16AsWav, getWavDurationSeconds, sliceWavBySeconds } from "./audio-utils.mjs";
+
+/**
+ * 格式化音频偏移量（毫秒 → "HH:MM:SS" 或 "MM:SS"）。
+ * @param {number} milliseconds - 毫秒数
+ * @returns {string} 格式化后的时长字符串
+ */
+export function formatAudioOffset(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
 import { identifySpeakerFromAudio } from "./speakers.mjs";
