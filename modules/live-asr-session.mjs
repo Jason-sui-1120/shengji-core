@@ -700,6 +700,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (typeof deps.countDraftTranscripts === "function") {
       return Number(await deps.countDraftTranscripts(meetingIdParam)) || 0;
     }
+    // 公司端用 MySQL（deps.countDraftTranscripts），不用 SQLite（deps.openDb）——
+    // fallback 分支检查 deps.openDb 是否存在（公网 SQLite 才用）。
+    if (typeof deps.openDb !== "function") {
+      console.error(`[seal] count drafts failed meeting=${meetingIdParam}: no countDraftTranscripts or openDb`);
+      return Number.MAX_SAFE_INTEGER;
+    }
     try {
       const db = deps.openDb();
       const draftCount = db.prepare(
@@ -716,6 +722,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   async function forceStabilizeDraftTranscripts(meetingIdParam) {
     if (typeof deps.forceStabilizeDraftTranscripts === "function") {
       return Number(await deps.forceStabilizeDraftTranscripts(meetingIdParam)) || 0;
+    }
+    // 公司端用 MySQL（deps.forceStabilizeDraftTranscripts），不用 SQLite（deps.openDb）——
+    // fallback 分支检查 deps.openDb 是否存在（公网 SQLite 才用）。
+    if (typeof deps.openDb !== "function") {
+      console.error(`[seal] force stabilize failed meeting=${meetingIdParam}: no forceStabilizeDraftTranscripts or openDb`);
+      return 0;
     }
     try {
       const db = deps.openDb();
