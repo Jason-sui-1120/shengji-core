@@ -697,65 +697,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   }
 
   async function countDraftTranscripts(meetingIdParam) {
+    // 公司端用 MySQL（deps.countDraftTranscripts），公网端也应该实现 deps.countDraftTranscripts（SQLite）。
     if (typeof deps.countDraftTranscripts === "function") {
       return Number(await deps.countDraftTranscripts(meetingIdParam)) || 0;
     }
-    // 公司端用 MySQL（deps.countDraftTranscripts），不用 SQLite（deps.openDb）——
-    // fallback 分支检查 deps.openDb 是否存在（公网 SQLite 才用）。
-    if (typeof deps.openDb !== "function") {
-      console.error(`[seal] count drafts failed meeting=${meetingIdParam}: no countDraftTranscripts or openDb`);
-      return Number.MAX_SAFE_INTEGER;
-    }
-    try {
-      const db = deps.openDb();
-      const draftCount = db.prepare(
-        "SELECT COUNT(*) AS count FROM transcripts WHERE meeting_id = ? AND deleted_at IS NULL AND stability_status <> 'stable'"
-      ).get(Number(meetingIdParam))?.count || 0;
-      db.close();
-      return Number(draftCount || 0);
-    } catch (error) {
-      console.error(`[seal] count drafts failed meeting=${meetingIdParam}: ${error instanceof Error ? error.message : error}`);
-      return Number.MAX_SAFE_INTEGER;
-    }
+    console.error(`[seal] count drafts failed meeting=${meetingIdParam}: no countDraftTranscripts`);
+    return Number.MAX_SAFE_INTEGER;
   }
 
   async function forceStabilizeDraftTranscripts(meetingIdParam) {
     if (typeof deps.forceStabilizeDraftTranscripts === "function") {
       return Number(await deps.forceStabilizeDraftTranscripts(meetingIdParam)) || 0;
     }
-    // 公司端用 MySQL（deps.forceStabilizeDraftTranscripts），不用 SQLite（deps.openDb）——
-    // fallback 分支检查 deps.openDb 是否存在（公网 SQLite 才用）。
-    if (typeof deps.openDb !== "function") {
-      console.error(`[seal] force stabilize failed meeting=${meetingIdParam}: no forceStabilizeDraftTranscripts or openDb`);
-      return 0;
-    }
-    try {
-      const db = deps.openDb();
-      const draftRows = db.prepare(`
-        SELECT id FROM transcripts
-        WHERE meeting_id = ? AND deleted_at IS NULL AND stability_status <> 'stable' AND user_edited = 0
-      `).all(Number(meetingIdParam));
-      if (!draftRows.length) { db.close(); return 0; }
-      db.exec("BEGIN IMMEDIATE");
-      const stableRevision = deps.bumpMeetingStableRevision(db, Number(meetingIdParam));
-      db.prepare(`
-        UPDATE transcripts
-        SET stability_status = 'stable', stable_revision = ?, correction_consistency = 'forced', quality_status = 'fallback'
-        WHERE meeting_id = ? AND deleted_at IS NULL AND stability_status <> 'stable' AND user_edited = 0
-      `).run(stableRevision, Number(meetingIdParam));
-      db.exec("COMMIT");
-      db.close();
-      // P1：尾段强制稳定也调 afterStableCorrection（稳定稿版本变化唯一事件）
-      if (typeof deps.afterStableCorrection === "function") {
-        await deps.afterStableCorrection(meetingIdParam, stableRevision);
-      }
-      deps.scheduleServerAutoAnalyze(meetingIdParam, stableRevision);
-      console.log(`[seal] force stabilized ${draftRows.length} draft transcripts meeting=${meetingIdParam}`);
-      return draftRows.length;
-    } catch (error) {
-      console.error(`[seal] force stabilize failed meeting=${meetingIdParam}: ${error instanceof Error ? error.message : error}`);
-      return 0;
-    }
+    // 公司端用 MySQL（deps.forceStabilizeDraftTranscripts），公网端也应该实现 deps.forceStabilizeDraftTranscripts（SQLite）。
+    console.error(`[seal] force stabilize failed meeting=${meetingIdParam}: no forceStabilizeDraftTranscripts`);
+    return 0;
   }
 
   function getRollingWindowPlan(isFinal) {
