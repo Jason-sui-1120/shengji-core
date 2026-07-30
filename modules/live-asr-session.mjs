@@ -651,7 +651,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           config.POST_MEETING_SPEAKER_TIMEOUT_MS,
           "post_meeting_speaker",
         );
-        if (!speakerResult.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult.reason || "unknown"}`);
+        if (!speakerResult.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult.reason || speakerResult.message || "unknown"}`);
       } catch (error) {
         console.error(`[post-meeting-speaker] failed meeting=${meetingId}: `, error);
       }
