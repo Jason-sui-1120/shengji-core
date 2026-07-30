@@ -62,7 +62,7 @@ function updateWavFileHeader(audioPath, pcmBytes) {
     fd = fs.openSync(audioPath, "r+");
     fs.writeSync(fd, header, 0, header.length, 0);
   } catch (error) {
-    console.error(`[audio] header update failed path=${audioPath}: ${error instanceof Error ? error.message : error}`);
+    console.error(`[audio] header update failed path=${audioPath}: `, error);
   } finally {
     if (fd) {
       try { fs.closeSync(fd); } catch {}
@@ -229,6 +229,7 @@ export function uniqueStrings(values) {
   return result;
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function savePcmAsWav(pcmChunks, meetingId) {
   const pcm = Buffer.concat(pcmChunks.filter((chunk) => Buffer.isBuffer(chunk) && chunk.length));
   if (!pcm.length) return { audioPath: "", wav: null };
@@ -240,6 +241,7 @@ export function savePcmAsWav(pcmChunks, meetingId) {
   return { audioPath, wav };
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function appendMeetingSourceAudio(meetingId, pcm) {
   if (!Buffer.isBuffer(pcm) || !pcm.length) return Promise.resolve();
   const key = Number(meetingId || 0);
@@ -339,6 +341,7 @@ export function looksSemanticallyIncomplete(text) {
   return false;
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function getFinalizedMeetingByMeetingId(meetingId, openDb) {
   const db = openDb();
   const saved = db.prepare(`
@@ -386,6 +389,7 @@ export function getFinalizedMeetingByMeetingId(meetingId, openDb) {
   };
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function getMeetingLiveRecord(meetingId, openDb) {
   const db = openDb();
   const row = db.prepare("SELECT id, status, deleted_at AS deletedAt FROM meetings WHERE id = ?").get(Number(meetingId || 0));
@@ -393,6 +397,7 @@ export function getMeetingLiveRecord(meetingId, openDb) {
   return row || null;
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function insertTranscript(body, openDb) {
   const db = openDb();
   const stabilityStatus = body.stabilityStatus || (body.speakerSource === "manual" || !body.asrModel || !ROLLING_ASR_ENABLED ? "stable" : "draft");
@@ -452,6 +457,7 @@ export function insertTranscript(body, openDb) {
   return normalizeTranscriptRow(row);
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function normalizeTranscriptDraftTimeline(meetingId, drafts, quality = {}, openDb) {
   if (!Array.isArray(drafts) || !drafts.length) return [];
   let cursor = 0;
@@ -616,6 +622,7 @@ export function getLatestTranscriptId(meetingId, openDb) {
   return Number(row?.id || 0);
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudioBaseMs, openDb) {
   const fallback = {
     pcm: Buffer.alloc(0),
@@ -658,11 +665,12 @@ export function loadRollingResumeAudio(meetingId, sourceAudioState, sessionAudio
       hasPreviousWindow: lastWindowEndMs > 0,
     };
   } catch (error) {
-    console.error(`[rolling-asr] resume preload failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
+    console.error(`[rolling-asr] resume preload failed meeting=${meetingId}: `, error);
     return fallback;
   }
 }
 
+/** @sqlite 需要 openDb 参数（SQLite 实现） */
 export function ensureMeetingSourceAudio(meetingId, options = {}, openDb) {
   const key = Number(meetingId || 0);
   const audioPath = getMeetingSourceAudioPath(key);
@@ -712,7 +720,7 @@ export async function checkpointMeetingSourceAudio(meetingId, status = "partial"
     await state.chain;
   } catch (error) {
     state.failed = true;
-    console.error(`[source-audio] checkpoint write failed meeting=${key}: ${error instanceof Error ? error.message : error}`);
+    console.error(`[source-audio] checkpoint write failed meeting=${key}: `, error);
   }
   const stat = fs.existsSync(state.audioPath) ? fs.statSync(state.audioPath) : { size: WAV_HEADER_BYTES };
   const bytes = Math.max(0, Number(stat.size || 0) - WAV_HEADER_BYTES);
@@ -741,7 +749,7 @@ export async function finalizeMeetingSourceAudio(meetingId, status = "complete",
     await state.chain;
   } catch (error) {
     state.failed = true;
-    console.error(`[source-audio] write failed meeting=${key}: ${error instanceof Error ? error.message : error}`);
+    console.error(`[source-audio] write failed meeting=${key}: `, error);
   }
   const stat = fs.existsSync(state.audioPath) ? fs.statSync(state.audioPath) : { size: WAV_HEADER_BYTES };
   const bytes = Math.max(0, Number(stat.size || 0) - WAV_HEADER_BYTES);

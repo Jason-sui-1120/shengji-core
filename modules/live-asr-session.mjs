@@ -366,7 +366,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
     current.on("error", (error) => {
       if (current !== upstream || upstreamStopped) return;
-      console.error(`[asr] upstream error meeting=${meetingId}: ${error.message}`);
+      console.error(`[asr] upstream error meeting=${meetingId}: `, error);
       safeSend({ type: "status", status: "upstream_reconnecting", reason: error.message });
     });
   }
@@ -507,7 +507,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         sequence: acceptedSequence,
       });
     }).catch((error) => {
-      console.error(`[source-audio] append failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
+      console.error(`[source-audio] append failed meeting=${meetingId}: `, error);
       safeSend({ type: "status", status: "source_audio_error", message: "完整录音保存异常" });
     });
     receivedAudioBytes += chunk.length;
@@ -572,7 +572,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       void Promise.resolve(deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2))).catch(() => {});
       await deps.checkpointMeetingSourceAudio(meetingId, "partial");
     } catch (error) {
-      console.error(`[pause] checkpoint failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
+      console.error(`[pause] checkpoint failed meeting=${meetingId}: `, error);
     }
   }
 
@@ -585,7 +585,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const sourceBytes = sessionAudioBaseBytes + receivedAudioBytes;
       void Promise.resolve(deps.persistMeetingElapsedSeconds(meetingId, sourceBytes / (16000 * 2))).catch(() => {});
     } catch (error) {
-      console.error(`[seal] persist elapsed failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`);
+      console.error(`[seal] persist elapsed failed meeting=${meetingId}: `, error);
     }
     deps.beginMeetingAiJob(meetingId);
     sealingPromise = (async () => {
@@ -608,7 +608,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       try {
         await deps.markMeetingSourceAudioStabilizing?.(meetingId);
       } catch (error) {
-        console.error(`[seal] mark tail stabilizing failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`[seal] mark tail stabilizing failed meeting=${meetingId}: `, error);
       }
       // 会中失败窗口可以后台退避重试；用户已点击结束后绝不能继续无界重试，
       // 否则一次文件 ASR 卡住会永久占住归档。尾段本轮限时执行，失败即走实时稿收口。
@@ -627,7 +627,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         );
       } catch (error) {
         tailDrainCompleted = false;
-        console.error(`[seal] tail stabilization timed out meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`[seal] tail stabilization timed out meeting=${meetingId}: `, error);
       }
       const retriesResolved = tailDrainCompleted && failedRollingWindows.length === 0;
       // P0.3：deadline 到达后不再额外无条件等待 120 秒——立即取消本轮未完成任务。
@@ -653,7 +653,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         );
         if (!speakerResult.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult.reason || "unknown"}`);
       } catch (error) {
-        console.error(`[post-meeting-speaker] failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`[post-meeting-speaker] failed meeting=${meetingId}: `, error);
       }
       const draftCount = await countDraftTranscripts(meetingId);
       const hasPendingRollingRetry = failedRollingWindows.some((window) => Number(window.attempt || 0) < deps.config.ROLLING_ASR_MAX_RETRIES);
