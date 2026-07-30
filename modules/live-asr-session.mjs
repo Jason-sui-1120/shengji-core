@@ -208,6 +208,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     nextSample: sessionAudioBaseSample,
     nextAudioMs: sessionAudioBaseMs,
   });
+  // P0：确认 source_audio_ready 已送达——日志记录，排查前端未收到的问题
+  console.log(`[asr/live] source_audio_ready sent meeting=${meetingId} nextSample=${sessionAudioBaseSample} clientReadyState=${client.readyState}`);
 
   function getTranscriptTimeLabel() {
     return deps.formatMeetingElapsedTime((sessionAudioBaseBytes + receivedAudioBytes) / (16000 * 2));
