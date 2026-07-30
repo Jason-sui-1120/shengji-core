@@ -152,6 +152,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   const sessionAudioBaseSample = Math.floor(sessionAudioBaseBytes / 2);
   let receivedAudioBytes = 0;
   let pendingAudioChunkMeta = null;
+  // P0：端到端可观测状态——首帧 PCM/首帧发送上游/首帧 ASR 结果
+  let firstPcmReceived = false;
+  let firstPcmSentUpstream = false;
+  let firstAsrResult = false;
+  let asrNoFirstResultTimer = null;
   // 端侧尚未实现“跨连接滚动窗口恢复”时，必须以标准空状态启动；不能让
   // null/undefined 在首次录音时直接打断 WebSocket 会话。
   // 公司端实现是 async（要查 MySQL asr_window_runs）；await 对公网同步实现同样安全。
@@ -327,11 +332,23 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
       if (name === "TranscriptionResultChanged" && result) {
         latestPartial = result;
+        // P0：端到端可观测状态——首帧 ASR 结果
+        if (!firstAsrResult) {
+          firstAsrResult = true;
+          if (asrNoFirstResultTimer) { clearTimeout(asrNoFirstResultTimer); asrNoFirstResultTimer = null; }
+          safeSend({ type: "status", status: "first_asr_result", kind: "partial" });
+        }
         safeSend({ type: "transcript.partial", text: result });
         return;
       }
 
       if (name === "SentenceEnd" && result) {
+        // P0：端到端可观测状态——首帧 ASR 结果
+        if (!firstAsrResult) {
+          firstAsrResult = true;
+          if (asrNoFirstResultTimer) { clearTimeout(asrNoFirstResultTimer); asrNoFirstResultTimer = null; }
+          safeSend({ type: "status", status: "first_asr_result", kind: "final" });
+        }
         const payload = message?.payload || {};
         pushTranscriptSegment(result, {
           startMs: mapUpstreamAudioTime(payload.begin_time ?? payload.beginTime ?? payload.start_time ?? payload.startTime),
@@ -511,6 +528,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       safeSend({ type: "status", status: "source_audio_error", message: "完整录音保存异常" });
     });
     receivedAudioBytes += chunk.length;
+    // P0：端到端可观测状态——首帧 PCM 已收到
+    if (!firstPcmReceived) {
+      firstPcmReceived = true;
+      safeSend({ type: "status", status: "first_pcm_received", bytes: chunk.length, sampleCount: chunk.length / 2 });
+    }
     if (deps.config.ROLLING_ASR_ENABLED) {
       if (!rollingAudioBytes) {
         rollingAudioStartMs = Math.round((sessionAudioBaseBytes + receivedAudioBytes - chunk.length) / (16000 * 2) * 1000);
@@ -529,6 +551,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (upstreamOpen && started && upstream?.readyState === WebSocket.OPEN) {
       upstream.send(chunk, { binary: true });
       lastAudioSentAt = Date.now();
+      // P0：端到端可观测状态——首帧 PCM 已发送上游
+      if (!firstPcmSentUpstream) {
+        firstPcmSentUpstream = true;
+        safeSend({ type: "status", status: "first_pcm_sent_upstream", bytes: chunk.length });
+        // 启动 asr_no_first_result 定时器（12 秒无 ASR 结果报警）
+        if (asrNoFirstResultTimer) clearTimeout(asrNoFirstResultTimer);
+        asrNoFirstResultTimer = setTimeout(() => {
+          if (!firstAsrResult) {
+            safeSend({ type: "status", status: "asr_no_first_result", model, taskId: upstreamTaskId, sentBytes: receivedAudioBytes });
+          }
+        }, 12_000);
+      }
       return;
     }
     if (pendingAudioBytes + chunk.length <= config.ASR_PENDING_AUDIO_MAX_BYTES) {
