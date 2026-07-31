@@ -728,9 +728,12 @@ export async function checkpointMeetingSourceAudio(meetingId, status = "partial"
   state.bytes = bytes;
   state.scheduledBytes = Math.max(Number(state.scheduledBytes || 0), bytes);
   const durationMs = Math.round(bytes / (16000 * 2) * 1000);
+  // meetingLiveConnections 不是所有端都注入（公网端用 live-asr-helpers 直连，公司端 Adapter 覆盖）——
+  // 用 typeof 安全检测，不存在则直接用 status 参数（pause/resume 防误标记由端侧实现负责）。
+  const _liveConns = typeof meetingLiveConnections !== "undefined" ? meetingLiveConnections : null;
   const checkpointStatus = state.failed
     ? "error"
-    : (meetingLiveConnections.has(key) ? "recording" : status);
+    : (_liveConns && _liveConns.has(key) ? "recording" : status);
   const db = openDb();
   db.prepare(`
     UPDATE meetings
@@ -758,7 +761,7 @@ export async function finalizeMeetingSourceAudio(meetingId, status = "complete",
   updateWavFileHeader(state.audioPath, bytes);
   // 暂停后继续录音时，前一条连接的异步 seal 可能晚于新连接启动。
   // 这时绝不能把仍在录音的会议写成 complete；新连接会在真正 stop 时收口。
-  const finalStatus = state.failed ? "error" : (meetingLiveConnections.has(key) ? "recording" : status);
+  const finalStatus = state.failed ? "error" : (_liveConns && _liveConns.has(key) ? "recording" : status);
   const db = openDb();
   db.prepare(`
     UPDATE meetings
