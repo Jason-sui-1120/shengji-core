@@ -54,16 +54,51 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (!replayDone) preInitFrames.push([data, isBinary]);
   });
 
-  // P0：RMS 静音检测——16-bit PCM 的均方根能量，低于门限视为静音
-  function isSilentPcm(chunk) {
-    if (chunk.length < 2) return true;
+  // P0：自适应 VAD——方案 1+3（自适应门限 + 迟滞）。
+  // 返回 true 表示这一帧是真实语音（应计入 realSpeechAudioBytes）。
+  // 与旧 isSilentPcm（写死 500 门限）的区别：
+  //   1. 门限自适应——背景噪音 EMA × 系数，远场小声（RMS ~286）也能识别为语音
+  //   2. 迟滞——连续 N 帧超门限才确认语音开始，低于更低门限才确认结束，避免抖动
+  function isRealSpeechPcm(chunk) {
+    if (chunk.length < 2) return false;
     let sum = 0;
     const samples = chunk.length / 2;
     for (let i = 0; i < chunk.length; i += 2) {
       const val = chunk.readInt16LE(i);
       sum += val * val;
     }
-    return Math.sqrt(sum / samples) < SILENCE_RMS_THRESHOLD;
+    const rms = Math.sqrt(sum / samples);
+
+    const speechThreshold = Math.min(VAD_MAX_THRESHOLD, Math.max(VAD_MIN_THRESHOLD, vadNoiseFloor * VAD_SPEECH_RATIO));
+    const silenceThreshold = Math.min(VAD_MAX_THRESHOLD, Math.max(VAD_MIN_THRESHOLD, vadNoiseFloor * VAD_SILENCE_RATIO));
+
+    if (!vadInSpeech) {
+      // 未在语音段：连续 N 帧超语音门限才确认开始（防单帧噪音误触发）
+      if (rms >= speechThreshold) {
+        vadSpeechFrames += 1;
+        if (vadSpeechFrames >= VAD_START_FRAMES) {
+          vadInSpeech = true;
+          vadSpeechFrames = 0;
+          // 进入语音段——不更新噪音底（避免语音把噪音底拉高）
+          return true;
+        }
+      } else {
+        vadSpeechFrames = 0;
+        // 非语音帧——用 EMA 更新背景噪音底（自适应跟踪环境噪音）
+        vadNoiseFloor = VAD_NOISE_ALPHA * vadNoiseFloor + (1 - VAD_NOISE_ALPHA) * rms;
+      }
+      return false;
+    }
+
+    // 在语音段：低于静音门限才退出（迟滞上沿 < 语音门限，一句话中间停顿不被切断）
+    if (rms < silenceThreshold) {
+      vadInSpeech = false;
+      vadSpeechFrames = 0;
+      // 退出后这一帧视为静音，更新噪音底
+      vadNoiseFloor = VAD_NOISE_ALPHA * vadNoiseFloor + (1 - VAD_NOISE_ALPHA) * rms;
+      return false;
+    }
+    return true;
   }
 
   const meetingId = Number(clientUrl.searchParams.get("meetingId") || 1);
@@ -133,9 +168,19 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs }——去重要区间重叠+文本双条件
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
-  // P0：真实语音 PCM 字节数（RMS 静音检测后）——asr_no_first_result 定时器只在有真实语音时启动
+  // P0：真实语音 PCM 字节数（自适应 VAD 后）——asr_no_first_result 定时器只在有真实语音时启动
   let realSpeechAudioBytes = 0;
-  const SILENCE_RMS_THRESHOLD = 500; // 16-bit PCM 静音门限（经验值，低于此视为静音）
+  // 方案 1+3：自适应门限（背景噪音 × 系数）+ 迟滞（连续 N 帧确认真语音）——
+  // 替代写死的硬门限 500（对远场录音 RMS ~286 太激进，会把真实人声误判为静音）。
+  let vadNoiseFloor = 200;          // 背景噪音能量（EMA 自适应，初始保守值）
+  const VAD_NOISE_ALPHA = 0.97;     // 噪音 EMA 平滑系数（越大越慢，越稳）
+  const VAD_SPEECH_RATIO = 1.6;     // 语音门限 = 噪音 × 系数（迟滞下沿）
+  const VAD_SILENCE_RATIO = 1.2;    // 静音门限 = 噪音 × 系数（迟滞上沿，小于语音门限形成迟滞）
+  const VAD_START_FRAMES = 3;       // 连续 3 帧超语音门限才确认"语音开始"（防误触发）
+  const VAD_MIN_THRESHOLD = 80;     // 门限下限——极静环境下不误判键盘/呼吸为语音
+  const VAD_MAX_THRESHOLD = 2000;   // 门限上限——极吵环境下不漏判小声语音
+  let vadSpeechFrames = 0;          // 连续超语音门限的帧数
+  let vadInSpeech = false;          // 当前是否处于"语音段"（迟滞状态）
   let pendingAudioChunks = [];
   let pendingAudioBytes = 0;
   let upstream = null;
@@ -582,8 +627,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       speechAudioChunks.push(chunk);
       speechAudioBytes += chunk.length;
     }
-    // P0：真实语音 PCM 字节数（RMS 静音检测）——asr_no_first_result 定时器只在有真实语音时启动
-    if (!isSilentPcm(chunk)) {
+    // P0：真实语音 PCM 字节数（自适应 VAD）——asr_no_first_result 定时器只在有真实语音时启动
+    if (isRealSpeechPcm(chunk)) {
       realSpeechAudioBytes += chunk.length;
     }
     if (upstreamOpen && started && upstream?.readyState === WebSocket.OPEN) {
