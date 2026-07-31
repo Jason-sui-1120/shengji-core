@@ -747,6 +747,35 @@ export async function checkpointMeetingSourceAudio(meetingId, status = "partial"
   return { audioPath: state.audioPath, bytes, durationMs, status: checkpointStatus };
 }
 
+function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
+  const total = Math.max(0, Number(durationMs || 0));
+  if (!total) return;
+  const rows = db.prepare(`
+    SELECT id, audio_start_ms AS audioStartMs, audio_end_ms AS audioEndMs,
+      audio_duration_ms AS audioDurationMs, user_edited AS userEdited
+    FROM transcripts
+    WHERE meeting_id = ? AND deleted_at IS NULL
+    ORDER BY CASE WHEN audio_end_ms > audio_start_ms THEN audio_start_ms ELSE 9223372036854775807 END, id
+  `).all(Number(meetingId || 0));
+  if (!rows.length) return;
+  const update = db.prepare("UPDATE transcripts SET audio_start_ms = ?, audio_end_ms = ? WHERE id = ? AND meeting_id = ? AND deleted_at IS NULL");
+  const discard = db.prepare("UPDATE transcripts SET deleted_at = ? WHERE id = ? AND meeting_id = ? AND deleted_at IS NULL AND user_edited = 0");
+  let cursor = 0;
+  for (const row of rows) {
+    const originalStart = Number(row.audioStartMs || 0);
+    const originalEnd = Number(row.audioEndMs || 0);
+    const estimated = Math.max(250, Number(row.audioDurationMs || 0));
+    let start = Math.min(total, Math.max(cursor, Math.max(0, Number.isFinite(originalStart) ? originalStart : 0)));
+    let end = Number.isFinite(originalEnd) && originalEnd > start
+      ? Math.min(total, originalEnd)
+      : Math.min(total, start + estimated);
+    if (end <= start) end = Math.min(total, start + estimated);
+    if (start > total) { discard.run(new Date().toISOString(), row.id, Number(meetingId || 0)); continue; }
+    if (start !== originalStart || end !== originalEnd) update.run(start, end, row.id, Number(meetingId || 0));
+    cursor = end;
+  }
+}
+
 export async function finalizeMeetingSourceAudio(meetingId, status = "complete", openDb) {
   const key = Number(meetingId || 0);
   const state = meetingSourceAudioWrites.get(key) || ensureMeetingSourceAudio(key);
