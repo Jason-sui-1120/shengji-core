@@ -421,7 +421,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (upstreamStopped || client.readyState !== WebSocket.OPEN) return;
     if (upstreamReconnectTimer) clearTimeout(upstreamReconnectTimer);
     upstreamReconnectAttempt += 1;
-    const delay = Math.min(800 * 2 ** Math.min(upstreamReconnectAttempt - 1, 4), 8_000);
+    // AIT 按 key 限并发（1009 too many connections），残留连接数十秒才释放——
+    // 1009 时用长退避（30s 起，上限 90s），给残留连接释放时间，避免反复重连放大占用。
+    const isConcurrencyLimit = /too many connections|1009/i.test(String(reason));
+    const delay = isConcurrencyLimit
+      ? Math.min(30_000 * upstreamReconnectAttempt, 90_000)
+      : Math.min(800 * 2 ** Math.min(upstreamReconnectAttempt - 1, 4), 8_000);
     safeSend({ type: "status", status: "upstream_reconnecting", reason, attempt: upstreamReconnectAttempt, delay });
     upstreamReconnectTimer = setTimeout(() => {
       upstreamReconnectTimer = null;
