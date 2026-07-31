@@ -54,6 +54,18 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (!replayDone) preInitFrames.push([data, isBinary]);
   });
 
+  // P0：RMS 静音检测——16-bit PCM 的均方根能量，低于门限视为静音
+  function isSilentPcm(chunk) {
+    if (chunk.length < 2) return true;
+    let sum = 0;
+    const samples = chunk.length / 2;
+    for (let i = 0; i < chunk.length; i += 2) {
+      const val = chunk.readInt16LE(i);
+      sum += val * val;
+    }
+    return Math.sqrt(sum / samples) < SILENCE_RMS_THRESHOLD;
+  }
+
   const meetingId = Number(clientUrl.searchParams.get("meetingId") || 1);
   const liveMeeting = await deps.getMeetingLiveRecord(meetingId);
   const finalizedMeeting = await deps.getFinalizedMeetingByMeetingId(meetingId);
@@ -121,6 +133,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs }——去重要区间重叠+文本双条件
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
+  // P0：真实语音 PCM 字节数（RMS 静音检测后）——asr_no_first_result 定时器只在有真实语音时启动
+  let realSpeechAudioBytes = 0;
+  const SILENCE_RMS_THRESHOLD = 500; // 16-bit PCM 静音门限（经验值，低于此视为静音）
   let pendingAudioChunks = [];
   let pendingAudioBytes = 0;
   let upstream = null;
@@ -562,6 +577,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       speechAudioChunks.push(chunk);
       speechAudioBytes += chunk.length;
     }
+    // P0：真实语音 PCM 字节数（RMS 静音检测）——asr_no_first_result 定时器只在有真实语音时启动
+    if (!isSilentPcm(chunk)) {
+      realSpeechAudioBytes += chunk.length;
+    }
     if (upstreamOpen && started && upstream?.readyState === WebSocket.OPEN) {
       upstream.send(chunk, { binary: true });
       lastAudioSentAt = Date.now();
@@ -569,13 +588,16 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       if (!firstPcmSentUpstream) {
         firstPcmSentUpstream = true;
         safeSend({ type: "status", status: "first_pcm_sent_upstream", bytes: chunk.length });
-        // 启动 asr_no_first_result 定时器（12 秒无 ASR 结果报警 + 受控重连）
-        if (asrNoFirstResultTimer) clearTimeout(asrNoFirstResultTimer);
+      }
+      // P0：asr_no_first_result 定时器只在真实语音 PCM 时启动——静音保活帧不应触发上游健康检查
+      if (realSpeechAudioBytes > 0 && !asrNoFirstResultTimer && !firstAsrResult) {
         asrNoFirstResultTimer = setTimeout(() => {
           if (firstAsrResult) return;
+          // 重连前必须确认有非静音音频已发送——静音保活帧不算有效语音
+          if (realSpeechAudioBytes === 0) return;
           // P0：记录结构化日志（模型、任务 ID、发送字节数、最后上游事件），按 meetingId 可查
           console.error(
-            `[asr] no_first_result meeting=${meetingId} model=${model} taskId=${upstreamTaskId || "none"} sentBytes=${receivedAudioBytes} speechBytes=${speechAudioBytes} attempt=${asrNoFirstResultReconnectAttempt + 1}/${ASR_NO_FIRST_RESULT_MAX_RECONNECT}`
+            `[asr] no_first_result meeting=${meetingId} model=${model} taskId=${upstreamTaskId || "none"} sentBytes=${receivedAudioBytes} realSpeechBytes=${realSpeechAudioBytes} attempt=${asrNoFirstResultReconnectAttempt + 1}/${ASR_NO_FIRST_RESULT_MAX_RECONNECT}`
           );
           safeSend({ type: "status", status: "asr_no_first_result", model, taskId: upstreamTaskId, sentBytes: receivedAudioBytes });
           if (asrNoFirstResultReconnectAttempt >= ASR_NO_FIRST_RESULT_MAX_RECONNECT) {
