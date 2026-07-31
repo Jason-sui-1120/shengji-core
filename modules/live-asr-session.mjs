@@ -126,6 +126,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let upstream = null;
   let upstreamReconnectTimer = null;
   let upstreamReconnectAttempt = 0;
+  // P0：asr_no_first_result 受控重连上限——达到上限后向用户展示错误，不无限停留
+  const ASR_NO_FIRST_RESULT_MAX_RECONNECT = 3;
+  let asrNoFirstResultReconnectAttempt = 0;
   let upstreamTaskAudioBaseMs = 0;
   let upstreamTimestampClampCount = 0;
   let upstreamStopped = false;
@@ -320,6 +323,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           getTranscriptAudioOffsetMs() - Math.round(pendingAudioBytes / (16000 * 2) * 1000),
         );
         upstreamReconnectAttempt = 0;
+        // P0：受控重连后新上游任务——重置 first_asr_result 检测，让新任务的 12 秒窗口重新计时
+        firstAsrResult = false;
+        if (asrNoFirstResultTimer) clearTimeout(asrNoFirstResultTimer);
+        asrNoFirstResultTimer = null;
         while (pendingAudioChunks.length) {
           const chunk = pendingAudioChunks.shift();
           if (current.readyState === WebSocket.OPEN) current.send(chunk, { binary: true });
@@ -562,12 +569,33 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       if (!firstPcmSentUpstream) {
         firstPcmSentUpstream = true;
         safeSend({ type: "status", status: "first_pcm_sent_upstream", bytes: chunk.length });
-        // 启动 asr_no_first_result 定时器（12 秒无 ASR 结果报警）
+        // 启动 asr_no_first_result 定时器（12 秒无 ASR 结果报警 + 受控重连）
         if (asrNoFirstResultTimer) clearTimeout(asrNoFirstResultTimer);
         asrNoFirstResultTimer = setTimeout(() => {
-          if (!firstAsrResult) {
-            safeSend({ type: "status", status: "asr_no_first_result", model, taskId: upstreamTaskId, sentBytes: receivedAudioBytes });
+          if (firstAsrResult) return;
+          // P0：记录结构化日志（模型、任务 ID、发送字节数、最后上游事件），按 meetingId 可查
+          console.error(
+            `[asr] no_first_result meeting=${meetingId} model=${model} taskId=${upstreamTaskId || "none"} sentBytes=${receivedAudioBytes} speechBytes=${speechAudioBytes} attempt=${asrNoFirstResultReconnectAttempt + 1}/${ASR_NO_FIRST_RESULT_MAX_RECONNECT}`
+          );
+          safeSend({ type: "status", status: "asr_no_first_result", model, taskId: upstreamTaskId, sentBytes: receivedAudioBytes });
+          if (asrNoFirstResultReconnectAttempt >= ASR_NO_FIRST_RESULT_MAX_RECONNECT) {
+            // 达到重试上限——向用户展示错误，不无限停留在"识别中"
+            safeSend({
+              type: "status",
+              status: "asr_failed",
+              message: "识别服务持续无响应，请结束录音后重试",
+              model,
+              taskId: upstreamTaskId,
+              sentBytes: receivedAudioBytes,
+            });
+            return;
           }
+          asrNoFirstResultReconnectAttempt += 1;
+          // 关闭该上游任务并执行受限重连——重连成功后 started 会重置 firstAsrResult 检测
+          if (upstream?.readyState === WebSocket.OPEN) {
+            try { upstream.close(4000, "no_first_result"); } catch { /* ignore */ }
+          }
+          scheduleUpstreamReconnect("asr_no_first_result");
         }, 12_000);
       }
       return;
