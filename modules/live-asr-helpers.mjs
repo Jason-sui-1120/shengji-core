@@ -713,6 +713,10 @@ export function ensureMeetingSourceAudio(meetingId, options = {}, openDb) {
   return state;
 }
 
+// meetingLiveConnections 不是所有端都注入（公网端用 live-asr-helpers 直连，公司端 Adapter 覆盖）——
+// 用 typeof 安全检测，不存在则直接用 status 参数（pause/resume 防误标记由端侧实现负责）。
+const _liveConns = typeof meetingLiveConnections !== "undefined" ? meetingLiveConnections : null;
+
 export async function checkpointMeetingSourceAudio(meetingId, status = "partial", openDb) {
   const key = Number(meetingId || 0);
   const state = meetingSourceAudioWrites.get(key) || ensureMeetingSourceAudio(key);
@@ -729,8 +733,6 @@ export async function checkpointMeetingSourceAudio(meetingId, status = "partial"
   state.scheduledBytes = Math.max(Number(state.scheduledBytes || 0), bytes);
   const durationMs = Math.round(bytes / (16000 * 2) * 1000);
   // meetingLiveConnections 不是所有端都注入（公网端用 live-asr-helpers 直连，公司端 Adapter 覆盖）——
-  // 用 typeof 安全检测，不存在则直接用 status 参数（pause/resume 防误标记由端侧实现负责）。
-  const _liveConns = typeof meetingLiveConnections !== "undefined" ? meetingLiveConnections : null;
   const checkpointStatus = state.failed
     ? "error"
     : (_liveConns && _liveConns.has(key) ? "recording" : status);
