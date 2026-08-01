@@ -172,11 +172,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let realSpeechAudioBytes = 0;
   // 方案 1+3：自适应门限（背景噪音 × 系数）+ 迟滞（连续 N 帧确认真语音）——
   // 替代写死的硬门限 500（对远场录音 RMS ~286 太激进，会把真实人声误判为静音）。
-  let vadNoiseFloor = 200;          // 背景噪音能量（EMA 自适应，初始保守值）
-  const VAD_NOISE_ALPHA = 0.97;     // 噪音 EMA 平滑系数（越大越慢，越稳）
-  const VAD_SPEECH_RATIO = 1.6;     // 语音门限 = 噪音 × 系数（迟滞下沿）
-  const VAD_SILENCE_RATIO = 1.2;    // 静音门限 = 噪音 × 系数（迟滞上沿，小于语音门限形成迟滞）
-  const VAD_START_FRAMES = 3;       // 连续 3 帧超语音门限才确认"语音开始"（防误触发）
+  let vadNoiseFloor = 100;          // 背景噪音能量（EMA 自适应，初始保守值——远场环境噪音通常 ~100-200）
+  const VAD_NOISE_ALPHA = 0.95;     // 噪音 EMA 平滑系数（越大越慢，越稳）
+  const VAD_SPEECH_RATIO = 1.3;     // 语音门限 = 噪音 × 系数（远场小声 RMS ~250 也能识别）
+  const VAD_SILENCE_RATIO = 1.1;    // 静音门限 = 噪音 × 系数（迟滞上沿，小于语音门限形成迟滞）
+  const VAD_START_FRAMES = 2;       // 连续 2 帧超语音门限才确认"语音开始"（防误触发）
   const VAD_MIN_THRESHOLD = 80;     // 门限下限——极静环境下不误判键盘/呼吸为语音
   const VAD_MAX_THRESHOLD = 2000;   // 门限上限——极吵环境下不漏判小声语音
   let vadSpeechFrames = 0;          // 连续超语音门限的帧数
