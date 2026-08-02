@@ -144,13 +144,14 @@
       "method": "PATCH",
       "path": "/api/speakers/rename",
       "body": {
-        "speaker": "说话人1",
-        "name": "李四"
+        "meetingId": 1,
+        "from": "说话人1",
+        "to": "李四"
       },
       "status": [
         200,
-        404,
-        500
+        400,
+        404
       ],
       "requiredFields": {},
       "auth": "company"

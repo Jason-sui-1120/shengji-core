@@ -19,6 +19,10 @@ export function registerSpeakerRoutes(deps) {
       pattern: /^\/api\/speakers\/rename$/,
       async handler(req, res) {
         const body = await readJson(req);
+        // 入参契约校验：缺 from/to 是客户端错误（400），不应冒泡成 500。
+        const from = String(body?.from || "").trim();
+        const to = String(body?.to || "").trim();
+        if (!from || !to) { sendJson(res, 400, { error: "speaker rename requires from and to" }); return; }
         sendJson(res, 200, await renameSpeaker(body, getAuthContext(req)));
       },
     },
