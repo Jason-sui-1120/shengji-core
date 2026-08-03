@@ -56,6 +56,13 @@ export async function alignRollingCorrectionToRows(rows, correctedText, fileResu
     String(timing.previousStableText || ""),
     Number(timing.trimTrailingSeconds || 0),
     Math.max(0, Number(timing.windowEndAudioMs || 0) - Number(timing.windowStartAudioMs || 0)),
+    // 中心提交区间与语音轨道——缺失时对齐层只能按请求上下文对齐，
+    // 会把前一窗口重叠内容错配到本窗实时行。
+    {
+      commitStartMs: timing.commitStartMs,
+      commitEndMs: timing.commitEndMs,
+      sourceSpeechIntervals: timing.sourceSpeechIntervals,
+    },
   );
   if (fileTimed.length && fileTimed.some((line) => line.fileSegmentCount > 0)) {
     return {
@@ -86,9 +93,9 @@ export async function alignRollingCorrectionToRows(rows, correctedText, fileResu
   };
 }
 
-export function alignFileSegmentsToRowsByAbsoluteTime(rows, fileResult, trimLeadingSeconds = 0, windowStartAudioMs = 0, previousStableText = "", trimTrailingSeconds = 0, requestDurationMs = 0) {
+export function alignFileSegmentsToRowsByAbsoluteTime(rows, fileResult, trimLeadingSeconds = 0, windowStartAudioMs = 0, previousStableText = "", trimTrailingSeconds = 0, requestDurationMs = 0, timeline = {}) {
   if (!rows.length) return [];
-  const timedSegments = getAbsoluteFileSegments(fileResult, trimLeadingSeconds, windowStartAudioMs, previousStableText, trimTrailingSeconds, requestDurationMs);
+  const timedSegments = getAbsoluteFileSegments(fileResult, trimLeadingSeconds, windowStartAudioMs, previousStableText, trimTrailingSeconds, requestDurationMs, timeline);
   if (!timedSegments.length) return [];
 
   const assigned = rows.map(() => []);
@@ -108,7 +115,11 @@ export function alignFileSegmentsToRowsByAbsoluteTime(rows, fileResult, trimLead
         nearestDistance = distance;
       }
     });
-    if (bestIndex >= 0) assigned[bestIndex].push(segment);
+    // 零重叠片段不得分配给"距离最近"的行——那会把前一窗口尾部内容拼进
+    // 本窗实时行（银标重复主因）。窗口间有 8 秒重叠，边界片段会由相邻
+    // 窗口的中心区间正确承接，跳过不丢内容。
+    if (bestIndex < 0 || bestOverlap <= 0) continue;
+    assigned[bestIndex].push(segment);
   }
 
   return rows.map((row, index) => {

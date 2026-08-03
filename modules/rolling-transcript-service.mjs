@@ -143,6 +143,8 @@ export class RollingTranscriptService {
       });
 
       // 无候选行（或没有实时草稿行）：直接插入文件 ASR 段为稳定稿。
+      // 必须传 effective 中心提交区间——否则落库退回请求上下文范围，
+      // 前置 8 秒重叠区会被当作稳定稿重复插入（银标重复主因之一）。
       if (!candidateRows.length) {
         const inserted = await this.insertFileAsrSegments({
           meetingId,
@@ -151,6 +153,8 @@ export class RollingTranscriptService {
           trimTrailingSeconds,
           windowStartAudioMs,
           windowEndAudioMs,
+          effectiveWindowStartMs,
+          effectiveWindowEndMs,
           previousStableText,
           sourceSpeechIntervals,
           model,
@@ -177,11 +181,16 @@ export class RollingTranscriptService {
       }
 
       // 有候选行：对齐文件稿 → 声纹分离投射说话人 → 原子应用稳定稿校正。
+      // 必须传 effective 中心提交区间（commitStartMs/commitEndMs）——
+      // 否则对齐层把请求上下文起点当提交起点，前一窗口重叠内容会拼进本窗稳定稿。
       const alignment = await alignRollingCorrectionToRows(candidateRows, correctedText, result, trimLeadingSeconds, {
         windowStartAudioMs,
         windowEndAudioMs,
         trimTrailingSeconds,
         previousStableText,
+        commitStartMs: effectiveWindowStartMs,
+        commitEndMs: effectiveWindowEndMs,
+        sourceSpeechIntervals,
       });
       const aligned = alignment.lines;
       if (!aligned.length) {
