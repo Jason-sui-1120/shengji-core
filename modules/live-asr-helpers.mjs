@@ -380,9 +380,9 @@ export function getFinalizedMeetingByMeetingId(meetingId, openDb) {
     risks: JSON.parse(saved.risksJson),
     openQuestions: JSON.parse(saved.openQuestionsJson),
     actionSnapshot: JSON.parse(saved.actionSnapshotJson),
-    timelineChapters: safeParseJson(saved.timelineChaptersJson) ?? [],
-    quoteMoments: safeParseJson(saved.quoteMomentsJson) ?? [],
-    speakerViewpoints: safeParseJson(saved.speakerViewpointsJson) ?? [],
+    timelineChapters: safeParseJsonLocal(saved.timelineChaptersJson) ?? [],
+    quoteMoments: safeParseJsonLocal(saved.quoteMomentsJson) ?? [],
+    speakerViewpoints: safeParseJsonLocal(saved.speakerViewpointsJson) ?? [],
     transcriptCount: saved.transcriptCount,
     sourceRevision: Number(saved.sourceRevision || 0),
     createdAt: saved.createdAt,
@@ -537,10 +537,10 @@ export async function correctTranscriptText({ meetingId, text }, openDb) {
   if (!hasAiAccess() || compact.length < 10) return glossaryCorrected || original;
 
   const glossary = [
-    ...(safeParseJson(memory?.factsJson) ?? []),
-    ...(safeParseJson(memory?.goalsJson) ?? []),
-    ...(safeParseJson(memory?.topicsJson) ?? []),
-    ...(safeParseJson(memory?.decisionsJson) ?? []),
+    ...(safeParseJsonLocal(memory?.factsJson) ?? []),
+    ...(safeParseJsonLocal(memory?.goalsJson) ?? []),
+    ...(safeParseJsonLocal(memory?.topicsJson) ?? []),
+    ...(safeParseJsonLocal(memory?.decisionsJson) ?? []),
   ];
   const correctionContext = buildTranscriptCorrectionContext({
     meeting,
