@@ -54,16 +54,16 @@ describe("normalizeFinalMinutes 真实调用", () => {
   });
 
   test("risks 需证据，无证据被过滤", () => {
-    const ai = { risks: ["价格偏高影响销量[T2]", "完全编造的风险"] };
+    const ai = { risks: ["学区房那个价格都偏高[T2]", "完全编造的风险"] };
     const result = normalizeFinalMinutes(ai, [], transcripts);
     assert.equal(result.risks.length, 1, "只保留有证据的风险");
-    assert.ok(result.risks[0].includes("价格偏高"), "应保留 T2 证据风险");
+    assert.ok(result.risks[0].includes("价格都偏高"), "应保留 T2 证据风险");
   });
 
   test("actionUpdates 待办需证据 source", () => {
     const ai = {};
     const actions = [
-      { title: "加大优惠力度", owner: "张三", due: "下周", status: "confirmed", source: "会议决定[T12]" },
+      { title: "加大优惠力度", owner: "张三", due: "下周", status: "confirmed", source: "那我们就确定加大优惠力度[T12]" },
       { title: "无证据待办", owner: "待确认", due: "待确认", status: "candidate", source: "" },
     ];
     const result = normalizeFinalMinutes(ai, actions, transcripts);
