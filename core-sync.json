@@ -291,7 +291,7 @@
     },
     {
       "file": "register-routes-dispatch.test.mjs",
-      "sha256": "c0eb27708a87c9aa3cf95f6ab6c370c59b01f00a3860ff5822852759ad12455b"
+      "sha256": "ef0e9a906bf8def57b0b7f0f505e96de28d5c1d162e75a9900af4b331b9d6b79"
     }
   ],
   "scripts": [

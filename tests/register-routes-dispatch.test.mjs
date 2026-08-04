@@ -20,9 +20,6 @@ async function collectWithSpy() {
   for (const mod of MODULES) {
     const m = await import(`./${mod}`);
     const register = Object.values(m).find((v) => typeof v === "function");
-    const calls = [];
-    // stub 所有可能用到的 deps
-    const stub = new Proxy({}, { get: () => async () => ({}) });
     const routes = register({
       readJson: async () => ({}),
       sendJson: () => {},
@@ -40,6 +37,7 @@ async function collectWithSpy() {
       ),
     });
     for (const r of routes) {
+      const calls = []; // 每个路由独立的调用记录
       const spy = async () => { calls.push(r.pattern.source); };
       result.push({ group: mod, method: r.method, pattern: r.pattern, handler: spy, calls });
     }
