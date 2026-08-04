@@ -1,5 +1,5 @@
 {
-  "version": "1.11.2",
+  "version": "1.12.0",
   "releasedAt": "2026-07-25",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -202,6 +202,10 @@
     {
       "file": "fake-ai.mjs",
       "sha256": "e9c7d67f3e1f7635bb03746f5951a31da287b521e6181cbd6ccfe88950f69859"
+    },
+    {
+      "file": "playback.mjs",
+      "sha256": "bcd3a60fafdd10c9d614e49a4f273c136a5414ec16eb36bd1e6efcc0a8716d96"
     }
   ],
   "tests": [
@@ -316,6 +320,10 @@
     {
       "file": "fake-ai.test.mjs",
       "sha256": "6e05cb8fbaedcaab319000d668b9bf7cc90f899eb66c33d5ed155249102ff5bc"
+    },
+    {
+      "file": "playback.test.mjs",
+      "sha256": "9af697c3f41f500d8b3d639a6f815e5fd3c282c05d6186ce21f60bafc03e4cad"
     }
   ],
   "scripts": [
