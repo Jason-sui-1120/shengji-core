@@ -276,6 +276,10 @@
     {
       "file": "pause-resume-reconnect-timeline.test.mjs",
       "sha256": "b3cfbfbab8b11b5fdb63aeaabff8c045843b332b7411f21179e51c4ac913d174"
+    },
+    {
+      "file": "connection-timer-cleanup.test.mjs",
+      "sha256": "7ae7c6d6952d41203f7c1d547a3926dc71cf886140db55a2d992e737f3e32960"
     }
   ],
   "scripts": [
