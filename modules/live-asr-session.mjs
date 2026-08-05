@@ -26,6 +26,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 部分上游 ASR 任务在 4 分钟左右会被服务端回收。主动平滑轮换，
     // 避免等到硬断开后再进入几十秒退避，导致用户感知为“4 分钟后不再转写”。
     ASR_UPSTREAM_ROTATE_AFTER_MS: 210_000,
+    // 上游 LM 模型可能长时间只发 TranscriptionResultChanged 而不发
+    // SentenceEnd；实时草稿不能因此一直堆在顶部卡片。达到这个间隔后，
+    // 共享会话会把已确认的 partial 前缀落成一条 draft，后续稳定稿再替换它。
+    ASR_PARTIAL_PROGRESS_INTERVAL_MS: 12_000,
+    ASR_PARTIAL_PROGRESS_MIN_CHARS: 24,
+    ASR_PARTIAL_PROGRESS_MAX_CHARS: 120,
     // 可选纠错/声纹步骤不能阻塞实时 flush 队列；超时后保留原文继续落库。
     ASR_OPTIONAL_STEP_TIMEOUT_MS: 3_000,
     ASR_GLOSSARY_TIMEOUT_MS: 1_500,
@@ -216,6 +222,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastAudioSentAt = 0;
   let transcriptFlushTimer = null;
   let transcriptFlushReason = "";
+  let partialProgressTimer = null;
+  let partialProgressCommittedText = "";
+  let partialProgressLastAudioEndMs = 0;
   let rollingAudioChunks = [];
   let rollingAudioBytes = 0;
   let rollingCorrectionRunning = false;
@@ -470,10 +479,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           safeSend({ type: "status", status: "first_asr_result", kind: "partial" });
         }
         safeSend({ type: "transcript.partial", text: result });
+        // 不能把是否收到浏览器 VAD 端点作为落稿前提。部分 LM 模型只发
+        // 累积 partial，不发 SentenceEnd；服务端独立兜底，保证长句中间也
+        // 会出现 draft 行，稳定稿随后按时间区间替换它。
+        schedulePartialProgressFlush();
         return;
       }
 
       if (name === "SentenceEnd" && result) {
+        resetPartialProgressState();
         // P0：端到端可观测状态——首帧 ASR 结果
         if (!firstAsrResult) {
           firstAsrResult = true;
@@ -511,6 +525,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const reasonText = reason.toString();
       console.error(`[asr] upstream closed meeting=${meetingId} code=${code} reason=${reasonText || "none"}`);
       void flushTranscriptBuffer("upstream_close", { fallbackToPartial: true });
+      resetPartialProgressState();
       scheduleUpstreamReconnect(reasonText || `code ${code}`);
     });
 
@@ -578,6 +593,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         return;
       }
       if (control?.type === "vad.endpoint") {
+        clearPartialProgressTimer();
         if (activeRollingSpeech) {
           activeRollingSpeech.endMs = getTranscriptAudioOffsetMs();
           rollingSpeechIntervals.push(activeRollingSpeech);
@@ -586,6 +602,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           activeRollingSpeech = null;
         }
         scheduleTranscriptFlush(control.reason || "endpoint", { fallbackToPartial: true });
+        // 当前 VAD 端点已经交给常规 flush；下一句必须从零开始计算
+        // partial 前缀，不能沿用上一句的提交进度。
+        partialProgressCommittedText = "";
+        partialProgressLastAudioEndMs = 0;
         return;
       }
       if (text === "stop") {
@@ -756,6 +776,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   client.on("close", () => {
     clearInterval(clientPingTimer);
     clearInterval(audioOffsetTimer);
+    resetPartialProgressState();
     // 清理连接锁，允许后续重连
     if (meetingLiveConnections.get(meetingId) === client) meetingLiveConnections.delete(meetingId);
     if (transcriptFlushTimer) {
@@ -1206,6 +1227,80 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     safeSend({ type: "status", status: "stabilizing_transcript", reason, delay });
   }
 
+  function clearPartialProgressTimer() {
+    if (partialProgressTimer) {
+      clearTimeout(partialProgressTimer);
+      partialProgressTimer = null;
+    }
+  }
+
+  function resetPartialProgressState() {
+    clearPartialProgressTimer();
+    partialProgressCommittedText = "";
+    partialProgressLastAudioEndMs = 0;
+  }
+
+  function findPartialCommitBoundary(text) {
+    const value = String(text || "");
+    const punctuation = /[。！？!?；;，,、：:]/g;
+    let last = -1;
+    let match;
+    while ((match = punctuation.exec(value))) last = match.index + match[0].length;
+    const minChars = Math.max(8, Number(config.ASR_PARTIAL_PROGRESS_MIN_CHARS || 24));
+    const maxChars = Math.max(minChars, Number(config.ASR_PARTIAL_PROGRESS_MAX_CHARS || 120));
+    if (last >= minChars) return Math.min(last, maxChars);
+    if (value.length >= maxChars) return maxChars;
+    return 0;
+  }
+
+  function schedulePartialProgressFlush() {
+    if (partialProgressTimer || upstreamStopped || stopRequested || transcriptBuffer || !latestPartial) return;
+    const delay = Math.max(3_000, Number(config.ASR_PARTIAL_PROGRESS_INTERVAL_MS || 12_000));
+    partialProgressTimer = setTimeout(() => {
+      partialProgressTimer = null;
+      const candidate = deps.normalizeTranscriptSegment(latestPartial);
+      if (!candidate || candidate.length < Math.max(8, Number(config.ASR_PARTIAL_PROGRESS_MIN_CHARS || 24))) return;
+
+      // 上游返回的是“从句首到当前”的快照。只提交尚未落稿的前缀，
+      // 避免每 12 秒把整句重复插入；若上游回改了前缀，则从新快照重新开始。
+      const prefixMatches = partialProgressCommittedText
+        && candidate.startsWith(partialProgressCommittedText);
+      const delta = prefixMatches ? candidate.slice(partialProgressCommittedText.length) : candidate;
+      const commitLength = findPartialCommitBoundary(delta);
+      if (!commitLength) {
+        schedulePartialProgressFlush();
+        return;
+      }
+      const commitText = deps.normalizeTranscriptSegment(delta.slice(0, commitLength));
+      if (!commitText) {
+        schedulePartialProgressFlush();
+        return;
+      }
+
+      const currentAudioMs = getTranscriptAudioOffsetMs();
+      const estimatedStartMs = partialProgressLastAudioEndMs > 0
+        ? partialProgressLastAudioEndMs
+        : Math.max(0, currentAudioMs - Math.max(1_000, delay));
+      transcriptBuffer = commitText;
+      transcriptBufferStartedAudioMs = Math.min(estimatedStartMs, currentAudioMs);
+      transcriptBufferStartedAt = deps.formatMeetingElapsedTime(transcriptBufferStartedAudioMs / 1000);
+      transcriptBufferEndAudioMs = Math.max(transcriptBufferStartedAudioMs + 1, currentAudioMs);
+      partialProgressCommittedText = prefixMatches
+        ? `${partialProgressCommittedText}${commitText}`
+        : commitText;
+      partialProgressLastAudioEndMs = transcriptBufferEndAudioMs;
+      latestPartial = "";
+      safeSend({
+        type: "status",
+        status: "partial_progress_flush",
+        audioStartMs: transcriptBufferStartedAudioMs,
+        audioEndMs: transcriptBufferEndAudioMs,
+        textLength: commitText.length,
+      });
+      void flushTranscriptBuffer("partial_progress");
+    }, delay);
+  }
+
   function getTranscriptFlushDelay(reason = "endpoint") {
     if (["stop", "client_close", "upstream_close", "max_text", "max_duration"].includes(reason)) {
       return Math.max(0, config.ASR_FINAL_STABILITY_DELAY_MS);
@@ -1539,6 +1634,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
   function stopUpstream() {
     clearInterval(clientPingTimer);
+    resetPartialProgressState();
     upstreamStopped = true;
     if (upstreamReconnectTimer) {
       clearTimeout(upstreamReconnectTimer);
