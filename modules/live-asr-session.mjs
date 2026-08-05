@@ -23,6 +23,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     ASR_INCOMPLETE_MERGE_DELAY_MS: 2_500,
     LIVE_DRAFT_LLM_CORRECTION: false,
     LIVE_SPEAKER_IDENTIFY_INTERVAL_MS: 12_000,
+    // 部分上游 ASR 任务在 4 分钟左右会被服务端回收。主动平滑轮换，
+    // 避免等到硬断开后再进入几十秒退避，导致用户感知为“4 分钟后不再转写”。
+    ASR_UPSTREAM_ROTATE_AFTER_MS: 210_000,
+    // 可选纠错/声纹步骤不能阻塞实时 flush 队列；超时后保留原文继续落库。
+    ASR_OPTIONAL_STEP_TIMEOUT_MS: 3_000,
+    ASR_GLOSSARY_TIMEOUT_MS: 1_500,
     ROLLING_ASR_TIMEOUT_MS: 90_000,
     TAIL_STABILIZATION_TIMEOUT_MS: 60_000,
     POST_MEETING_SPEAKER_TIMEOUT_MS: 15_000,
@@ -142,7 +148,17 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   // 不依赖 /api/state 的 elapsedSeconds（录音过程中不更新，只有 pause/seal 才写）。
   const audioOffsetTimer = setInterval(() => {
     if (client.readyState === WebSocket.OPEN) {
-      safeSend({ type: "status", status: "audio_offset", audioOffsetMs: getTranscriptAudioOffsetMs() });
+      safeSend({
+        type: "status",
+        status: "audio_offset",
+        audioOffsetMs: getTranscriptAudioOffsetMs(),
+        upstreamTaskId,
+        upstreamOpen,
+        upstreamStarted: started,
+        pendingAudioBytes,
+        sourceAppendQueuedBytes,
+        upstreamReconnectAttempt,
+      });
     }
   }, 5000);
   // 无用户模型选择 UI——前端不传 model 参数，直接用 AIT_ASR_MODEL 配置（models.json 权威值）。
@@ -159,6 +175,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let pendingSpeechStartAt = "";
   let pendingSpeechStartAudioMs = null;
   let latestPartial = "";
+  // 当前 flush 快照对应的实时预览 ID。稳定行通过 WS 明确告知前端替换关系，
+  // 不再依赖模糊的时间重叠判断。
+  let transcriptBufferPreviewIds = [];
   // LM 类模型（huoshanLM）的 TranscriptionResultChanged 是"从句首到当前"的
   // 累积快照，且对英文长句不发 SentenceEnd。vad.endpoint 的兜底 flush 会用
   // latestPartial 落库，若不加抑制会把同一句话的快照反复落库（前缀累积重复行）。
@@ -186,6 +205,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let upstream = null;
   let upstreamReconnectTimer = null;
   let upstreamReconnectAttempt = 0;
+  let upstreamRotationTimer = null;
   // P0：asr_no_first_result 受控重连上限——达到上限后向用户展示错误，不无限停留
   const ASR_NO_FIRST_RESULT_MAX_RECONNECT = 3;
   let asrNoFirstResultReconnectAttempt = 0;
@@ -225,6 +245,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let firstPcmSentUpstream = false;
   let firstAsrResult = false;
   let asrNoFirstResultTimer = null;
+  let pendingAudioGapReported = false;
+  // 端侧 Adapter 可能各自有写入队列，但共享会话不能并发调用 append：
+  // 每 256ms 一次的 fire-and-forget 会在 MySQL 端形成未受控的 promise 扇出。
+  let sourceAppendChain = Promise.resolve();
+  let sourceAppendQueuedBytes = 0;
   // 端侧尚未实现“跨连接滚动窗口恢复”时，必须以标准空状态启动；不能让
   // null/undefined 在首次录音时直接打断 WebSocket 会话。
   // 公司端实现是 async（要查 MySQL asr_window_runs）；await 对公网同步实现同样安全。
@@ -261,6 +286,34 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     ]).finally(() => {
       if (timer) clearTimeout(timer);
     });
+  }
+
+  function enqueueSourceAudio(pcm) {
+    if (!Buffer.isBuffer(pcm) || !pcm.length) return Promise.resolve();
+    const chunk = Buffer.from(pcm);
+    sourceAppendQueuedBytes += chunk.length;
+    const task = sourceAppendChain
+      .catch(() => undefined)
+      .then(() => deps.appendMeetingSourceAudio(meetingId, chunk))
+      .finally(() => {
+        sourceAppendQueuedBytes = Math.max(0, sourceAppendQueuedBytes - chunk.length);
+      });
+    sourceAppendChain = task.catch(() => undefined);
+    return task;
+  }
+
+  function scheduleUpstreamRotation() {
+    if (upstreamRotationTimer) clearTimeout(upstreamRotationTimer);
+    const delay = Math.max(0, Number(config.ASR_UPSTREAM_ROTATE_AFTER_MS || 0));
+    if (!delay) return;
+    upstreamRotationTimer = setTimeout(() => {
+      upstreamRotationTimer = null;
+      if (upstreamStopped || upstream?.readyState !== WebSocket.OPEN || !started) return;
+      console.warn(`[asr] proactive rotation meeting=${meetingId} taskId=${upstreamTaskId} ageMs=${delay}`);
+      safeSend({ type: "status", status: "upstream_rotating", reason: "planned_task_rotation", delay });
+      // 4001 是应用自定义关闭码；close 事件会按普通短退避建立新任务。
+      try { upstream.close(4001, "planned_task_rotation"); } catch { /* already closed */ }
+    }, delay);
   }
 
   safeSend({ type: "status", status: "connecting", model });
@@ -383,6 +436,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           getTranscriptAudioOffsetMs() - Math.round(pendingAudioBytes / (16000 * 2) * 1000),
         );
         upstreamReconnectAttempt = 0;
+        asrNoFirstResultReconnectAttempt = 0;
         // P0：受控重连后新上游任务——重置 first_asr_result 检测，让新任务的 12 秒窗口重新计时
         firstAsrResult = false;
         if (asrNoFirstResultTimer) clearTimeout(asrNoFirstResultTimer);
@@ -392,6 +446,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           if (current.readyState === WebSocket.OPEN) current.send(chunk, { binary: true });
         }
         pendingAudioBytes = 0;
+        pendingAudioGapReported = false;
         // 静音保活：每 10s 检查一次，如果距上次发音频超过 10s，补发静音帧
         if (silenceKeepaliveTimer) clearInterval(silenceKeepaliveTimer);
         silenceKeepaliveTimer = setInterval(() => {
@@ -400,6 +455,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           const silenceFrame = Buffer.alloc(3200); // 100ms 静音 PCM @16k/16bit
           try { current.send(silenceFrame, { binary: true }); } catch { /* gone */ }
         }, 10000);
+        scheduleUpstreamRotation();
         safeSend({ type: "status", status: "started", model });
         return;
       }
@@ -409,6 +465,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         // P0：端到端可观测状态——首帧 ASR 结果
         if (!firstAsrResult) {
           firstAsrResult = true;
+          asrNoFirstResultReconnectAttempt = 0;
           if (asrNoFirstResultTimer) { clearTimeout(asrNoFirstResultTimer); asrNoFirstResultTimer = null; }
           safeSend({ type: "status", status: "first_asr_result", kind: "partial" });
         }
@@ -420,6 +477,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         // P0：端到端可观测状态——首帧 ASR 结果
         if (!firstAsrResult) {
           firstAsrResult = true;
+          asrNoFirstResultReconnectAttempt = 0;
           if (asrNoFirstResultTimer) { clearTimeout(asrNoFirstResultTimer); asrNoFirstResultTimer = null; }
           safeSend({ type: "status", status: "first_asr_result", kind: "final" });
         }
@@ -447,6 +505,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       if (current !== upstream || upstreamStopped) return;
       upstreamOpen = false;
       started = false;
+      if (upstreamRotationTimer) { clearTimeout(upstreamRotationTimer); upstreamRotationTimer = null; }
       if (current._pingTimer) { clearInterval(current._pingTimer); current._pingTimer = null; }
       if (silenceKeepaliveTimer) { clearInterval(silenceKeepaliveTimer); silenceKeepaliveTimer = null; }
       const reasonText = reason.toString();
@@ -466,12 +525,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (upstreamStopped || client.readyState !== WebSocket.OPEN) return;
     if (upstreamReconnectTimer) clearTimeout(upstreamReconnectTimer);
     upstreamReconnectAttempt += 1;
-    // AIT 按 key 限并发（1009 too many connections），残留连接数十秒才释放——
-    // 1009 时用长退避（30s 起，上限 90s），给残留连接释放时间，避免反复重连放大占用。
-    // 1011（上游内部错误）也用长退避——上游服务暂时不可用时快速重连只会放大问题。
+    // 上游任务轮换/内部错误需要短暂退避，但不能固定等待 30~90 秒：
+    // pending 音频只有有限窗口，过长退避会让用户看到“实时转写停止”。
+    // 真正的并发限制仍逐次增加退避，且最多 20 秒。
     const isConcurrencyLimit = /too many connections|1009|1011|internal error/i.test(String(reason));
     const delay = isConcurrencyLimit
-      ? Math.min(30_000 * upstreamReconnectAttempt, 90_000)
+      ? Math.min(5_000 * upstreamReconnectAttempt, 20_000)
       : Math.min(800 * 2 ** Math.min(upstreamReconnectAttempt - 1, 4), 8_000);
     safeSend({ type: "status", status: "upstream_reconnecting", reason, attempt: upstreamReconnectAttempt, delay });
     upstreamReconnectTimer = setTimeout(() => {
@@ -588,14 +647,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         const gapBytes = Math.max(0, (chunkMeta.startSample - expectedStartSample) * 2);
         if (gapBytes > 0 && gapBytes <= 16000 * 2 * 600) {
           // 源音频按样本序号定位，缺口必须填等量静音，否则后续时间轴整体漂移。
-          void deps.appendMeetingSourceAudio(meetingId, Buffer.alloc(gapBytes)).catch(() => {});
+          void enqueueSourceAudio(Buffer.alloc(gapBytes)).catch(() => {});
         }
         receivedAudioBytes = Math.max(0, (chunkMeta.startSample - sessionAudioBaseSample) * 2);
       }
     }
     const acceptedSequence = chunkMeta?.sequence;
     const acceptedEndSample = expectedStartSample + Math.floor(chunk.length / 2);
-    void deps.appendMeetingSourceAudio(meetingId, chunk).then(() => {
+    void enqueueSourceAudio(chunk).then(() => {
       safeSend({
         type: "status",
         status: "source_audio_committed",
@@ -676,7 +735,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (pendingAudioBytes + chunk.length <= config.ASR_PENDING_AUDIO_MAX_BYTES) {
       pendingAudioChunks.push(chunk);
       pendingAudioBytes += chunk.length;
-    } else {
+    } else if (!pendingAudioGapReported) {
+      pendingAudioGapReported = true;
       safeSend({
         type: "status",
         status: "realtime_asr_audio_gap",
@@ -1181,10 +1241,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const previewEndMs = Math.max(previewStartMs + 1, timedEndMs ?? getTranscriptAudioOffsetMs());
     if (client.readyState === WebSocket.OPEN) {
       realtimeSegmentSequence += 1;
+      const previewId = -realtimeSegmentSequence;
+      transcriptBufferPreviewIds.push(previewId);
       safeSend({
         type: "transcript.realtime_segment",
         segment: {
-          id: -realtimeSegmentSequence,
+          id: previewId,
           time: deps.formatMeetingElapsedTime(previewStartMs / 1000),
           speaker: latestSpeakerResult?.speaker || "待识别",
           text: cleanedSegment,
@@ -1230,6 +1292,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       pendingSpeechStartAudioMs,
       latestPartial,
       latestSpeaker: latestSpeakerResult,
+      previewIds: [...transcriptBufferPreviewIds],
     };
     // 立即清空活动缓冲——新句子从空 buffer 开始，不与本次 flush 混。
     transcriptBuffer = "";
@@ -1241,6 +1304,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     latestPartial = "";
     speechAudioChunks = [];
     speechAudioBytes = 0;
+    transcriptBufferPreviewIds = [];
 
     flushChain = flushChain.then(() => flushTranscriptBufferInner(reason, options, snapshot)).catch((err) => {
       console.error(`[transcript] flush chain error meeting=${meetingId}: ${err instanceof Error ? err.message : err}`);
@@ -1316,7 +1380,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     let glossaryEntries = [];
     try {
       // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
-      glossaryEntries = await Promise.resolve(deps.getMeetingGlossaryEntries(meetingId));
+      glossaryEntries = await withTimeout(
+        Promise.resolve(deps.getMeetingGlossaryEntries(meetingId)),
+        config.ASR_GLOSSARY_TIMEOUT_MS,
+        "glossary_lookup",
+      );
       hotwords = deps.uniqueStrings(glossaryEntries.flatMap((entry) => [entry.term, ...(entry.aliases || [])]).filter(Boolean)).slice(0, 100);
     } catch { /* 词库不可用时保留原文 */ }
     if (usingPartialFallback) {
@@ -1355,10 +1423,17 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const shouldRunDiarization = !deps.config.ROLLING_ASR_ENABLED && textCompact.length >= 10;
     if (shouldIdentifySpeaker) lastSpeakerIdentifyAt = Date.now();
 
+    const optionalTimeoutMs = Math.max(500, Number(config.ASR_OPTIONAL_STEP_TIMEOUT_MS || 3_000));
     const [correction, speaker, diarization] = await Promise.allSettled([
-      shouldRunLiveCorrection ? deps.correctTranscriptText({ meetingId, text }) : Promise.resolve(correctedText),
-      shouldIdentifySpeaker ? deps.identifySpeakerFromAudio({ meetingId, wav, audioPath }) : Promise.resolve(snap.latestSpeaker || latestSpeakerResult),
-      shouldRunDiarization ? deps.diarizeSpeakerSegments({ meetingId, wav, audioPath }) : Promise.resolve([]),
+      shouldRunLiveCorrection
+        ? withTimeout(deps.correctTranscriptText({ meetingId, text }), optionalTimeoutMs, "live_correction")
+        : Promise.resolve(correctedText),
+      shouldIdentifySpeaker
+        ? withTimeout(deps.identifySpeakerFromAudio({ meetingId, wav, audioPath }), optionalTimeoutMs, "speaker_identify")
+        : Promise.resolve(snap.latestSpeaker || latestSpeakerResult),
+      shouldRunDiarization
+        ? withTimeout(deps.diarizeSpeakerSegments({ meetingId, wav, audioPath }), optionalTimeoutMs, "diarization")
+        : Promise.resolve([]),
     ]);
     if (correction.status === "fulfilled") {
       correctedText = deps.normalizeTranscriptSegment(correction.value) || text;
@@ -1450,8 +1525,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     }
     // 快照机制已下线（两端纪要统一实时查 transcripts 表）；保留可选调用兼容旧端侧注入。
     deps.refreshMeetingTranscriptSnapshotDebounced?.(meetingId);
-    for (const line of insertedLines) {
-      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line }));
+    for (const [index, line] of insertedLines.entries()) {
+      // 一个 flush 可能因声纹轨道拆成多行；只需让第一条稳定行携带本次快照
+      // 的全部 preview IDs，前端就能一次性精确清理对应临时行。
+      const wireLine = index === 0 && snap.previewIds?.length
+        ? { ...line, replacedPreviewIds: snap.previewIds }
+        : line;
+      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line: wireLine }));
       if (line.stabilityStatus === "stable") deps.scheduleServerAutoAnalyze(meetingId, line.stableRevision);
     }
     return insertedLines.at(-1) || null;
@@ -1467,6 +1547,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (silenceKeepaliveTimer) {
       clearInterval(silenceKeepaliveTimer);
       silenceKeepaliveTimer = null;
+    }
+    if (upstreamRotationTimer) {
+      clearTimeout(upstreamRotationTimer);
+      upstreamRotationTimer = null;
     }
     if (!upstream) return;
     if (upstream._pingTimer) { clearInterval(upstream._pingTimer); upstream._pingTimer = null; }
