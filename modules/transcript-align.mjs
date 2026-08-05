@@ -98,8 +98,18 @@ export function alignFileSegmentsToRowsByAbsoluteTime(rows, fileResult, trimLead
   const timedSegments = getAbsoluteFileSegments(fileResult, trimLeadingSeconds, windowStartAudioMs, previousStableText, trimTrailingSeconds, requestDurationMs, timeline);
   if (!timedSegments.length) return [];
 
-  const assigned = rows.map(() => []);
+  // P0-3: 按源片段 ID（startMs + text 前缀）去重——相邻窗口重叠区间的同一片段只分配一次
+  const seenSegmentKeys = new Set();
+  const uniqueSegments = [];
   for (const segment of timedSegments) {
+    const key = `${Math.round(segment.startMs)}:${(segment.text || "").slice(0, 20)}`;
+    if (seenSegmentKeys.has(key)) continue;
+    seenSegmentKeys.add(key);
+    uniqueSegments.push(segment);
+  }
+
+  const assigned = rows.map(() => []);
+  for (const segment of uniqueSegments) {
     let bestIndex = -1;
     let bestOverlap = 0;
     let nearestDistance = Number.POSITIVE_INFINITY;
