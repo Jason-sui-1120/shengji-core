@@ -538,6 +538,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           startMs: mapUpstreamAudioTime(payload.begin_time ?? payload.beginTime ?? payload.start_time ?? payload.startTime),
           endMs: mapUpstreamAudioTime(payload.end_time ?? payload.endTime ?? payload.time),
         });
+        // SentenceEnd 是上游已确认的句界，不能再把草稿是否落库交给浏览器
+        // VAD 的 endpoint 事件决定。浏览器端点事件丢失、延迟或连续说话时，
+        // 这里仍必须在短延迟后冻结这一段并写入时间轴；45 秒稳定稿会再原位替换。
+        scheduleTranscriptFlush("sentence_end");
         return;
       }
 
@@ -617,7 +621,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
       if (control?.type === "vad.speech_start") {
         if (!activeRollingSpeech) activeRollingSpeech = { startMs: getTranscriptAudioOffsetMs(), endMs: null };
-        if (transcriptFlushTimer) {
+        if (transcriptFlushTimer && transcriptFlushReason !== "sentence_end") {
           clearTimeout(transcriptFlushTimer);
           transcriptFlushTimer = null;
           transcriptFlushReason = "";
@@ -931,7 +935,15 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       if (draftCount > 0 && !hasPendingRollingRetry && !rollingCorrectionRunning && !rollingRetryRunning) {
         const forced = await forceStabilizeDraftTranscripts(meetingId);
         if (forced > 0) {
-          safeSend({ type: "status", status: "sealed", forcedStableCount: forced, message: `已强制收口 ${forced} 条未校准转写` });
+          safeSend({
+            type: "status",
+            status: "sealed",
+            forcedStableCount: forced,
+            // fallbackCount 是既有前端消费字段；保留它避免已经完成收口却
+            // 被前端误显示为“仍在尾段校准”。
+            fallbackCount: forced,
+            message: `已强制收口 ${forced} 条未校准转写`,
+          });
           return;
         }
       }
@@ -950,6 +962,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           type: "status",
           status: "sealed",
           forcedStableCount: forced,
+          fallbackCount: forced,
           tailFailureCode,
           tailFailureReason,
           tailFailedWindows: failedRollingWindows.length,
@@ -1261,6 +1274,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   }
 
   function scheduleTranscriptFlush(reason = "endpoint", options = {}) {
+    // 连续说话时上游会持续发 SentenceEnd。保留第一个句界的 deadline，
+    // 不让后续句界不断把草稿落库推迟；这样浏览器 VAD 缺失时也能稳定产出草稿。
+    if (transcriptFlushTimer && transcriptFlushReason === "sentence_end" && reason === "sentence_end") return;
     if (transcriptFlushTimer) clearTimeout(transcriptFlushTimer);
     const delay = getTranscriptFlushDelay(reason);
     transcriptFlushReason = reason;
@@ -1350,6 +1366,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (["stop", "client_close", "upstream_close", "max_text", "max_duration"].includes(reason)) {
       return Math.max(0, config.ASR_FINAL_STABILITY_DELAY_MS);
     }
+    if (reason === "sentence_end") return Math.max(0, config.ASR_FINAL_STABILITY_DELAY_MS);
     const candidate = deps.normalizeTranscriptSegment(transcriptBuffer || latestPartial);
     if (deps.shouldWaitForMoreSpeech(candidate)) return Math.max(config.ASR_SHORT_MERGE_DELAY_MS, config.ASR_FINAL_STABILITY_DELAY_MS);
     if (deps.looksSemanticallyIncomplete(candidate)) return Math.max(config.ASR_INCOMPLETE_MERGE_DELAY_MS, config.ASR_FINAL_STABILITY_DELAY_MS);

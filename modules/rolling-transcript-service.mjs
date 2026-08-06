@@ -161,6 +161,11 @@ export class RollingTranscriptService {
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
         });
         if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_timing", inserted.insertedCount, null);
+        // 直接插入的文件稿同样已经是新的稳定事实。必须触发后续自动分析，
+        // 否则界面会出现“已校准”但实时总结长期停在“等待首条稳定转写”。
+        if (inserted.insertedCount > 0) {
+          await this.afterStableCorrection(meetingId, inserted.stableRevision);
+        }
         return {
           ok: true,
           updatedCount: 0,
@@ -171,6 +176,7 @@ export class RollingTranscriptService {
           submissionMode,
           hotwordCount,
           hotwordChars: hotwordText.length,
+          stableRevision: inserted.stableRevision,
           reason: inserted.insertedCount ? "file_segments_inserted" : (rows.length ? "no_transcript_rows_in_window" : "no_transcript_rows"),
           alignmentMode: "file_timing",
           windowStartAudioMs,
@@ -213,7 +219,7 @@ export class RollingTranscriptService {
         });
         if (!replacement.insertedCount) throw new Error("unable to align corrected transcript to rows");
         if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_fallback", replacement.insertedCount, replacement.compositionTrace);
-        await this.afterStableCorrection(meetingId, 0);
+        await this.afterStableCorrection(meetingId, replacement.stableRevision);
         return {
           ok: true,
           updatedCount: 0,
@@ -225,6 +231,7 @@ export class RollingTranscriptService {
           sourceLength: correctedText.length,
           hotwordCount,
           hotwordChars: hotwordText.length,
+          stableRevision: replacement.stableRevision,
           alignmentMode: "file_replace_fallback",
           consistency: "disputed",
           windowStartAudioMs,
@@ -421,7 +428,7 @@ export class RollingTranscriptService {
     }
 
     // DB 插入通过 store（含重叠保护 + 事务）
-    const { insertedCount, insertedIds } = await this.store.insertFileAsrStableSegments(meetingId, {
+    const { insertedCount, insertedIds, stableRevision } = await this.store.insertFileAsrStableSegments(meetingId, {
       segments: segments.map((segment) => ({
         time: formatMeetingElapsedTime(segment.startMs / 1000),
         speaker: segment.speaker || "待识别",
@@ -441,6 +448,7 @@ export class RollingTranscriptService {
     return {
       insertedCount,
       insertedIds,
+      stableRevision: Number(stableRevision || 0),
       lastTranscriptId: insertedIds[insertedIds.length - 1] || 0,
       compositionTrace: {
         commitStartMs, commitEndMs, timing: auditTrace,

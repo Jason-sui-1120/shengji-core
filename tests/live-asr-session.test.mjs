@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
+import { test } from "node:test";
 
 // 同一测试会被 sync-core 复制到消费端 server/；兼容核心仓库与消费端两种目录。
 const moduleUrl = existsSync(new URL("../modules/live-asr-session.mjs", import.meta.url))
   ? new URL("../modules/live-asr-session.mjs", import.meta.url)
   : new URL("./live-asr-session.mjs", import.meta.url);
 const { createLiveAsrSession, getUpstreamReconnectPlan } = await import(moduleUrl);
+const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-service.mjs", import.meta.url))
+  ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
+  : new URL("./rolling-transcript-service.mjs", import.meta.url);
+const { RollingTranscriptService } = await import(rollingModuleUrl);
 
 // 1009 的关键不是“尽快重连”，而是等待 AIT 释放旧任务名额；否则 4 分钟轮换后
 // 会持续撞并发上限，表现为实时转写完全停止。此处锁定 30s / 60s / 90s 的退避。
@@ -31,9 +36,16 @@ const { createLiveAsrSession, getUpstreamReconnectPlan } = await import(moduleUr
 
 class FakeSocket {
   static OPEN = 1;
-  constructor() { this.readyState = FakeSocket.OPEN; this.handlers = new Map(); }
+  static instances = [];
+  constructor() {
+    this.readyState = FakeSocket.OPEN;
+    this.handlers = new Map();
+    this.sent = [];
+    FakeSocket.instances.push(this);
+  }
   on(name, handler) { this.handlers.set(name, handler); }
-  send() {}
+  emit(name, ...args) { return this.handlers.get(name)?.(...args); }
+  send(value) { this.sent.push(value); }
   close() { this.readyState = 3; }
   terminate() { this.readyState = 3; }
   ping() {}
@@ -75,3 +87,139 @@ assert.ok(client.handlers.has("close"));
 assert.ok(client.sent.some((item) => JSON.parse(item).status === "connecting"));
 client.handlers.get("close")();
 console.log("live-asr-session runtime dependency contract passed");
+
+test("文件 ASR 直接插入稳定稿后必须通知自动分析", async () => {
+  const notifications = [];
+  const fileResponse = {
+    ok: true,
+    text: JSON.stringify({
+      result: {
+        text: "首条稳定转写已经生成。",
+        segments: [{ text: "首条稳定转写已经生成。", start_time: 0.1, end_time: 3.8 }],
+      },
+    }),
+  };
+  const service = new RollingTranscriptService({
+    createWindowRun: async () => 0,
+    finalizeWindowRun: async () => {},
+    listWindowTranscriptRows: async () => [],
+    getPreviousStableText: async () => "",
+    insertFileAsrStableSegments: async (_meetingId, { segments }) => ({
+      insertedCount: segments.length,
+      insertedIds: [501],
+      stableRevision: 7,
+    }),
+  }, {
+    callFileTranscription: async () => fileResponse,
+    callFileTranscriptionByUrl: async () => fileResponse,
+    afterStableCorrection: async (meetingId, stableRevision) => {
+      notifications.push({ meetingId, stableRevision });
+    },
+  });
+
+  const result = await service.correctWindow({
+    meetingId: 77,
+    pcm: Buffer.alloc(4 * 16000 * 2),
+    startTranscriptId: 0,
+    endTranscriptId: 0,
+    windowStartAudioMs: 0,
+    windowEndAudioMs: 4000,
+    centerStartAudioMs: 0,
+    centerEndAudioMs: 4000,
+    getHotwords: async () => [],
+  });
+
+  assert.equal(result.insertedCount, 1);
+  assert.equal(result.stableRevision, 7);
+  assert.deepEqual(notifications, [{ meetingId: 77, stableRevision: 7 }]);
+});
+
+test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿", async () => {
+  const inserted = [];
+  const realtimeClient = {
+    readyState: FakeSocket.OPEN,
+    sent: [],
+    handlers: new Map(),
+    on(name, handler) { this.handlers.set(name, handler); },
+    send(value) { this.sent.push(value); },
+    ping() {},
+    close() { this.readyState = 3; },
+  };
+  const beforeSocketCount = FakeSocket.instances.length;
+  await createLiveAsrSession(realtimeClient, new URL("ws://localhost/api/asr/live?meetingId=88"), {
+    WebSocket: FakeSocket,
+    Buffer,
+    randomUUID,
+    meetingConnections: new Map(),
+    config: {
+      AIT_ASR_MODEL: "test",
+      ROLLING_ASR_ENABLED: false,
+      ROLLING_ASR_MAX_RETRIES: 1,
+      ASR_FINAL_STABILITY_DELAY_MS: 15,
+      ASR_UPSTREAM_ROTATE_AFTER_MS: 0,
+      ASR_GLOSSARY_TIMEOUT_MS: 10,
+    },
+    hasAiAccess: () => true,
+    getMeetingLiveRecord: async () => ({ id: 88, status: "recording" }),
+    getFinalizedMeetingByMeetingId: async () => null,
+    resolveRequestedAsrModel: () => "test",
+    getAsrUpstreamUrl: () => "ws://upstream.example.test",
+    ensureMeetingSourceAudio: () => ({ scheduledBytes: 0, bytes: 0 }),
+    loadRollingResumeAudio: () => null,
+    getLatestTranscriptId: () => 0,
+    normalizeTranscriptSegment: (text) => String(text || "").trim(),
+    formatMeetingElapsedTime: (seconds) => `00:${String(Math.floor(Number(seconds) || 0)).padStart(2, "0")}`,
+    normalizeTranscriptDraftTimeline: (_meetingId, lines) => lines,
+    persistMeetingElapsedSeconds: () => {},
+    checkpointMeetingSourceAudio: async () => {},
+    getAsrHotwordsForMeeting: () => [],
+    getMeetingGlossaryEntries: () => [],
+    uniqueStrings: (values) => [...new Set(values)],
+    isFillerOnly: () => false,
+    removeFillerWords: (text) => text,
+    mergeTranscriptText: (previous, next) => `${previous}${next}`,
+    applyGlossaryAliasCorrections: (text) => text,
+    analyzePcmQuality: () => ({ durationMs: 0 }),
+    savePcmAsWav: () => ({ audioPath: "", wav: null }),
+    buildTranscriptLineDrafts: ({ text, audioStartMs, audioEndMs }) => [{
+      id: 8801,
+      time: "00:00",
+      text,
+      speaker: "待识别",
+      audioStartMs,
+      audioEndMs,
+      stabilityStatus: "draft",
+    }],
+    insertTranscript: async (line) => { inserted.push(line); return line; },
+    shouldFlushTranscriptBuffer: () => false,
+    looksSemanticallyIncomplete: () => false,
+    shouldWaitForMoreSpeech: () => false,
+    identifySpeakerFromAudio: () => null,
+    diarizeSpeakerSegments: () => [],
+    correctTranscriptText: ({ text }) => text,
+    scheduleServerAutoAnalyze: () => {},
+    appendMeetingSourceAudio: () => {},
+    beginMeetingAiJob: () => {},
+    endMeetingAiJob: () => {},
+  });
+
+  const upstream = FakeSocket.instances.at(beforeSocketCount);
+  upstream.emit("open");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // 不发送 vad.speech_start / vad.endpoint，直接模拟上游已经确认句末。
+  upstream.emit("message", JSON.stringify({
+    header: { name: "SentenceEnd" },
+    payload: { result: "这条确认句末必须进入草稿列表。", begin_time: 0, end_time: 1200 },
+  }), false);
+  // 紧接下一句开始也不得取消 SentenceEnd 已登记的落库 deadline。
+  realtimeClient.handlers.get("message")(JSON.stringify({ type: "vad.speech_start" }), false);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].text, "这条确认句末必须进入草稿列表。");
+  assert.ok(realtimeClient.sent.some((item) => {
+    const message = JSON.parse(item);
+    return message.type === "transcript.final" && message.line?.text === "这条确认句末必须进入草稿列表。";
+  }));
+  realtimeClient.handlers.get("close")();
+});
