@@ -3,13 +3,22 @@
 // 验证两端共用代码路径输出一致。真实 DB 一致性由各自 store 契约测试 + 集成验证覆盖。
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import { existsSync } from "node:fs";
+// 同一测试复制到消费端 server/；核心仓库的模块在 ../modules/。
+const moduleBase = existsSync(new URL("../modules/transcript-align.mjs", import.meta.url))
+  ? "../modules/"
+  : "./";
+const transcriptAlign = await import(new URL(`${moduleBase}transcript-align.mjs`, import.meta.url));
+const transcriptComposer = await import(new URL(`${moduleBase}transcript-composer.mjs`, import.meta.url));
+const rollingModuleUrl = new URL(`${moduleBase}rolling-transcript-service.mjs`, import.meta.url);
+const {
   alignFileSegmentsToRowsByAbsoluteTime,
   extractStableWindowText,
   mapDiarizationSpeakersToRows,
   isUsableTranscriptCorrection,
-} from "./transcript-align.mjs";
-import { composeCanonicalFileSegments } from "./transcript-composer.mjs";
+} = transcriptAlign;
+const { composeCanonicalFileSegments } = transcriptComposer;
+const { getMappedCandidateRows } = await import(rollingModuleUrl);
 
 // 1070 风格 fixture：实时草稿行 + 文件 ASR 结果
 const fixtureRows = [
@@ -95,4 +104,17 @@ test("mapDiarizationSpeakersToRows：声纹投射到行", () => {
   ];
   const speakers = mapDiarizationSpeakersToRows(fixtureRows, aligned, diarizationSegments, 15, 5);
   assert.ok(speakers instanceof Map);
+});
+
+test("getMappedCandidateRows：未被文件稿覆盖的草稿不能伪装成稳定稿", () => {
+  const candidates = [
+    { id: 101, text: "已对齐的实时草稿" },
+    { id: 102, text: "文件稿未覆盖的实时残片" },
+    { id: 103, text: "已对齐的实时草稿" },
+  ];
+  const mapped = getMappedCandidateRows(candidates, [
+    { id: 101, text: "稳定稿一" },
+    { id: 103, text: "稳定稿二" },
+  ]);
+  assert.deepEqual(mapped.map((row) => row.id), [101, 103]);
 });

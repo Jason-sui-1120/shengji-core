@@ -243,10 +243,15 @@ export class RollingTranscriptService {
       const diarizationSegments = this.diarizeSpeakerSegments
         ? await this.diarizeSpeakerSegments({ meetingId, wav, audioPath })
         : [];
-      const diarizedSpeakers = mapDiarizationSpeakersToRows(candidateRows, aligned, diarizationSegments, wav.length / (16000 * 2), trimLeadingSeconds);
+      // 对齐器可能只覆盖候选行的一部分（例如实时端把一句拆成了多行）。
+      // 只有真正收到文件稿映射的行才能进入 stable；此前把整个 candidateRows
+      // 都标 stable，会把未覆盖的实时残片伪装成定稿，随后与文件稿并排保留，
+      // 造成重复文本和稳定稿评分虚高。
+      const matchedCandidateRows = getMappedCandidateRows(candidateRows, aligned);
+      const diarizedSpeakers = mapDiarizationSpeakersToRows(matchedCandidateRows, aligned, diarizationSegments, wav.length / (16000 * 2), trimLeadingSeconds);
 
       const applied = await this.store.applyStableCorrection(meetingId, {
-        candidateRows,
+        candidateRows: matchedCandidateRows,
         aligned,
         diarizedSpeakers,
         alignment,
@@ -274,6 +279,7 @@ export class RollingTranscriptService {
         stableRevision: applied.stableRevision,
         alignmentMode: alignment.mode,
         consistency: alignment.consistency,
+        unmatchedCandidateCount: Math.max(0, candidateRows.length - matchedCandidateRows.length),
         windowStartAudioMs,
         windowEndAudioMs,
         commitEndAudioMs: effectiveWindowEndMs,
@@ -458,4 +464,13 @@ export class RollingTranscriptService {
       },
     };
   }
+}
+
+/**
+ * 仅返回实际拿到文件稿映射的实时候选行。
+ * 未映射行仍保留 draft，等待下一窗口或封存补偿，绝不能提前标记成 stable。
+ */
+export function getMappedCandidateRows(candidateRows = [], aligned = []) {
+  const alignedRowIds = new Set(aligned.map((item) => Number(item?.id)).filter(Number.isFinite));
+  return candidateRows.filter((row) => alignedRowIds.has(Number(row?.id)));
 }
