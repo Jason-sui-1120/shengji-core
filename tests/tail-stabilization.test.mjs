@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
-import { fetchWithDeadline, recoverStaleTailStabilizations } from "./tail-stabilization.mjs";
+
+// 同一测试会被 sync-core 复制到消费端 server/；兼容核心仓库与消费端两种目录。
+const moduleUrl = existsSync(new URL("../modules/tail-stabilization.mjs", import.meta.url))
+  ? new URL("../modules/tail-stabilization.mjs", import.meta.url)
+  : new URL("./tail-stabilization.mjs", import.meta.url);
+const { fetchWithDeadline, recoverStaleTailStabilizations } = await import(moduleUrl);
 
 test("文件 ASR 单次请求超时会失败，而不是永久悬挂", async () => {
   const originalFetch = globalThis.fetch;

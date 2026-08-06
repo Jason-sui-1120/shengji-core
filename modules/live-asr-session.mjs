@@ -892,8 +892,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // P0.3：triggerRollingCorrection 接受 AbortSignal（deadline 到达后立即取消）。
       let tailDrainCompleted = true;
       try {
-        await withTimeout(
-          triggerRollingCorrection(true, tailAbortSignal),
+        // 结束恰好落在会中滚动窗口执行期间时，triggerRollingCorrection(true)
+        // 只会设置 rollingFinalRequested 后立即返回。若这里把这个“已请求”
+        // 误当成“已完成”，下方 forced-stable 会先把尾部 draft 转为稳定稿，
+        // 随后真正的尾窗文件稿又插入同一段时间，形成重复文本和时间轴重叠。
+        // 必须在全局 deadline 内排空正在执行的窗口及其递归尾窗，确认没有可提交
+        // 的中心区间后，才能决定是否使用实时稿兜底。
+        tailDrainCompleted = await withTimeout(
+          drainFinalRollingCorrections(tailAbortSignal, tailDeadline),
           config.TAIL_STABILIZATION_TIMEOUT_MS,
           "tail_stabilization_total",
         );
@@ -993,6 +999,25 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 公司端用 MySQL（deps.forceStabilizeDraftTranscripts），公网端也应该实现 deps.forceStabilizeDraftTranscripts（SQLite）。
     console.error(`[seal] force stabilize failed meeting=${meetingIdParam}: no forceStabilizeDraftTranscripts`);
     return 0;
+  }
+
+  async function drainFinalRollingCorrections(abortSignal, deadlineMs) {
+    const deadline = Math.max(Date.now(), Number(deadlineMs || Date.now()));
+    while (!abortSignal?.aborted && Date.now() < deadline) {
+      // 既有会中窗口可能在用户点击结束前已经开始。它的 finally 会依据
+      // rollingFinalRequested 递归处理尾窗；这里等待整个链条，而不是只等
+      // 第一个 trigger 调用返回。
+      if (rollingCorrectionRunning || rollingRetryRunning) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      // 没有正在执行的窗口时，由尾段主动继续清空剩余的源音频。plan 为空
+      // 才表示已没有尚未归属的中心区间；不能只因为某一次请求返回 null 就
+      // 提前把草稿强制升级为稳定稿。
+      if (!getRollingWindowPlan(true)) return true;
+      await triggerRollingCorrection(true, abortSignal);
+    }
+    return false;
   }
 
   function getRollingWindowPlan(isFinal) {

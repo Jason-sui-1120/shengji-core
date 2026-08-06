@@ -295,3 +295,144 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿
   }));
   realtimeClient.handlers.get("close")();
 });
+
+test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实时草稿", async () => {
+  const events = [];
+  let resolveFirstCorrection;
+  let correctionCalls = 0;
+  let forceCalls = 0;
+  const deferredFirstCorrection = new Promise((resolve) => { resolveFirstCorrection = resolve; });
+  const sealingClient = {
+    readyState: FakeSocket.OPEN,
+    sent: [],
+    handlers: new Map(),
+    on(name, handler) { this.handlers.set(name, handler); },
+    send(value) { this.sent.push(value); },
+    ping() {},
+    close() { this.readyState = 3; },
+  };
+  const beforeSocketCount = FakeSocket.instances.length;
+  await createLiveAsrSession(sealingClient, new URL("ws://localhost/api/asr/live?meetingId=89"), {
+    WebSocket: FakeSocket,
+    Buffer,
+    randomUUID,
+    meetingConnections: new Map(),
+    config: {
+      AIT_ASR_MODEL: "test",
+      ROLLING_ASR_ENABLED: true,
+      ROLLING_ASR_MODEL: "test-file",
+      ROLLING_ASR_WINDOW_SECONDS: 1,
+      ROLLING_ASR_OVERLAP_SECONDS: 0,
+      ROLLING_ASR_MAX_LOOKBACK_SECONDS: 0,
+      ROLLING_ASR_MAX_BOUNDARY_EXTENSION_SECONDS: 0,
+      ROLLING_ASR_MIN_SECONDS: 0.5,
+      ROLLING_ASR_TIMEOUT_MS: 1_000,
+      ROLLING_ASR_MAX_RETRIES: 0,
+      TAIL_STABILIZATION_TIMEOUT_MS: 2_000,
+      POST_MEETING_SPEAKER_TIMEOUT_MS: 1_000,
+      ASR_UPSTREAM_ROTATE_AFTER_MS: 0,
+      ASR_GLOSSARY_TIMEOUT_MS: 10,
+      ASR_FINAL_STABILITY_DELAY_MS: 0,
+    },
+    hasAiAccess: () => true,
+    getMeetingLiveRecord: async () => ({ id: 89, status: "recording" }),
+    getFinalizedMeetingByMeetingId: async () => null,
+    resolveRequestedAsrModel: () => "test",
+    getAsrUpstreamUrl: () => "ws://upstream.example.test",
+    ensureMeetingSourceAudio: () => ({ scheduledBytes: 0, bytes: 0 }),
+    loadRollingResumeAudio: () => null,
+    getLatestTranscriptId: () => 0,
+    normalizeTranscriptSegment: (text) => String(text || "").trim(),
+    formatMeetingElapsedTime: (seconds) => `00:${String(Math.floor(Number(seconds) || 0)).padStart(2, "0")}`,
+    normalizeTranscriptDraftTimeline: (_meetingId, lines) => lines,
+    persistMeetingElapsedSeconds: () => {},
+    checkpointMeetingSourceAudio: async () => {},
+    markMeetingSourceAudioStabilizing: async () => {},
+    finalizeMeetingSourceAudio: async () => { events.push("source-finalized"); },
+    reconcileMeetingSpeakersFromSourceAudio: async () => ({ ok: true }),
+    getAsrHotwordsForMeeting: () => [],
+    getMeetingGlossaryEntries: () => [],
+    uniqueStrings: (values) => [...new Set(values)],
+    isFillerOnly: () => false,
+    removeFillerWords: (text) => text,
+    mergeTranscriptText: (previous, next) => `${previous}${next}`,
+    applyGlossaryAliasCorrections: (text) => text,
+    analyzePcmQuality: () => ({ durationMs: 0 }),
+    savePcmAsWav: () => ({ audioPath: "", wav: null }),
+    buildTranscriptLineDrafts: () => [],
+    insertTranscript: async (line) => line,
+    shouldFlushTranscriptBuffer: () => false,
+    looksSemanticallyIncomplete: () => false,
+    shouldWaitForMoreSpeech: () => false,
+    identifySpeakerFromAudio: () => null,
+    diarizeSpeakerSegments: () => [],
+    correctTranscriptText: ({ text }) => text,
+    scheduleServerAutoAnalyze: () => {},
+    appendMeetingSourceAudio: () => {},
+    beginMeetingAiJob: () => {},
+    endMeetingAiJob: () => {},
+    waitForMeetingAiJobs: async () => {},
+    countDraftTranscripts: async () => 1,
+    forceStabilizeDraftTranscripts: async () => {
+      forceCalls += 1;
+      events.push("force-realtime-fallback");
+      return 1;
+    },
+    performRollingTranscriptCorrection: async () => {
+      correctionCalls += 1;
+      events.push(`file-window-${correctionCalls}`);
+      if (correctionCalls === 1) return deferredFirstCorrection;
+      return { lastProcessedTranscriptId: 0 };
+    },
+    normalizeSpeechIntervals: (intervals) => intervals,
+    buildRollingWindowPlan: ({ requestStartMs, availableEndMs, commitStartMs, isFinal, windowMs, rightContextMs }) => {
+      if (availableEndMs <= commitStartMs + 250) return null;
+      const targetEnd = commitStartMs + windowMs;
+      if (isFinal && targetEnd >= availableEndMs) {
+        return {
+          requestStartMs,
+          requestEndMs: availableEndMs,
+          commitStartMs,
+          commitEndMs: availableEndMs,
+          trimLeadingSeconds: 0,
+          trimTrailingSeconds: 0,
+        };
+      }
+      if (!isFinal && availableEndMs >= targetEnd + rightContextMs) {
+        return {
+          requestStartMs,
+          requestEndMs: targetEnd + rightContextMs,
+          commitStartMs,
+          commitEndMs: targetEnd,
+          trimLeadingSeconds: 0,
+          trimTrailingSeconds: rightContextMs / 1000,
+        };
+      }
+      return null;
+    },
+    findRollingContextStart: ({ commitStartMs }) => commitStartMs,
+  });
+
+  const upstream = FakeSocket.instances.at(beforeSocketCount);
+  upstream.emit("open");
+  upstream.emit("message", JSON.stringify({ header: { name: "TranscriptionStarted" }, payload: {} }), false);
+  // 2 秒音频先触发一个 1 秒会中文件窗口；该窗口故意保持未完成。
+  sealingClient.handlers.get("message")(Buffer.alloc(2 * 16000 * 2, 1), true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(correctionCalls, 1);
+
+  // 用户此时点击结束。旧实现会立即把 draft 强制升级，随后才插入剩余文件稿。
+  sealingClient.handlers.get("message")("stop", false);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(forceCalls, 0, "正在执行的会中文件窗口不能被当作已完成");
+
+  events.push("first-window-resolved");
+  resolveFirstCorrection({ lastProcessedTranscriptId: 0 });
+  for (let attempt = 0; attempt < 50 && forceCalls === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(correctionCalls >= 2, "封存必须继续处理剩余尾窗");
+  assert.equal(forceCalls, 1, "所有尾窗排空后才能用实时稿兜底");
+  assert.ok(events.indexOf("force-realtime-fallback") > events.lastIndexOf(`file-window-${correctionCalls}`));
+  sealingClient.handlers.get("close")();
+});
