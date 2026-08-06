@@ -7,7 +7,27 @@ import { existsSync } from "node:fs";
 const moduleUrl = existsSync(new URL("../modules/live-asr-session.mjs", import.meta.url))
   ? new URL("../modules/live-asr-session.mjs", import.meta.url)
   : new URL("./live-asr-session.mjs", import.meta.url);
-const { createLiveAsrSession } = await import(moduleUrl);
+const { createLiveAsrSession, getUpstreamReconnectPlan } = await import(moduleUrl);
+
+// 1009 的关键不是“尽快重连”，而是等待 AIT 释放旧任务名额；否则 4 分钟轮换后
+// 会持续撞并发上限，表现为实时转写完全停止。此处锁定 30s / 60s / 90s 的退避。
+{
+  const config = {
+    ASR_UPSTREAM_ROTATION_COOLDOWN_MS: 35_000,
+    ASR_CONCURRENCY_RETRY_BASE_MS: 30_000,
+    ASR_CONCURRENCY_RETRY_MAX_MS: 90_000,
+  };
+  const first = getUpstreamReconnectPlan("too many connections", 1, config);
+  const second = getUpstreamReconnectPlan("code 1009", 2, config);
+  const capped = getUpstreamReconnectPlan("internal error", 4, config);
+  const rotated = getUpstreamReconnectPlan("planned_task_rotation", 1, config);
+  const ordinary = getUpstreamReconnectPlan("network reset", 1, config);
+  assert.equal(first.delay, 30_000);
+  assert.equal(second.delay, 60_000);
+  assert.equal(capped.delay, 90_000);
+  assert.equal(rotated.delay, 35_000);
+  assert.equal(ordinary.delay, 800);
+}
 
 class FakeSocket {
   static OPEN = 1;

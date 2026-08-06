@@ -6,6 +6,40 @@
  * 通过 deps 注入端侧差异（DB 方言/鉴权/配置/存储），业务逻辑两端统一。
  */
 
+/**
+ * 计算上游重连策略。
+ *
+ * AIT 对同一 key 的流式 ASR 任务会在 close 后保留一段释放时间。若在这段时间
+ * 内以秒级频率重连，只会不断收到 1009（too many connections），既耗尽重试又让
+ * 用户误以为录音丢失。计划轮换和并发受限都必须等待足够长的冷却期；完整音频与
+ * 45 秒文件 ASR 在此期间仍持续工作。
+ */
+export function getUpstreamReconnectPlan(reason = "upstream closed", attempt = 1, config = {}) {
+  const normalizedReason = String(reason || "upstream closed");
+  const normalizedAttempt = Math.max(1, Number(attempt) || 1);
+  const isPlannedRotation = /planned_task_rotation/i.test(normalizedReason);
+  const isConcurrencyLimit = /too many connections|\b1009\b|\b1011\b|internal error/i.test(normalizedReason);
+  const rotationCooldownMs = Math.max(1_000, Number(config.ASR_UPSTREAM_ROTATION_COOLDOWN_MS || 35_000));
+  const concurrencyBaseMs = Math.max(1_000, Number(config.ASR_CONCURRENCY_RETRY_BASE_MS || 30_000));
+  const concurrencyMaxMs = Math.max(concurrencyBaseMs, Number(config.ASR_CONCURRENCY_RETRY_MAX_MS || 90_000));
+
+  if (isPlannedRotation) {
+    return { delay: rotationCooldownMs, isPlannedRotation, isConcurrencyLimit };
+  }
+  if (isConcurrencyLimit) {
+    return {
+      delay: Math.min(concurrencyBaseMs * normalizedAttempt, concurrencyMaxMs),
+      isPlannedRotation,
+      isConcurrencyLimit,
+    };
+  }
+  return {
+    delay: Math.min(800 * 2 ** Math.min(normalizedAttempt - 1, 4), 8_000),
+    isPlannedRotation,
+    isConcurrencyLimit,
+  };
+}
+
 export async function createLiveAsrSession(client, clientUrl, deps) {
   // 这个模块同时运行在 SQLite 公网端和 MySQL 公司端，不能再隐式读取宿主
   // index.mjs 的全局变量。所有 Node 运行时对象和端侧状态都必须显式注入。
@@ -24,8 +58,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     LIVE_DRAFT_LLM_CORRECTION: false,
     LIVE_SPEAKER_IDENTIFY_INTERVAL_MS: 12_000,
     // 部分上游 ASR 任务在 4 分钟左右会被服务端回收。主动平滑轮换，
-    // 避免等到硬断开后再进入几十秒退避，导致用户感知为“4 分钟后不再转写”。
+    // 避免等到硬断开后再进入重连。关闭旧任务后还会等候服务端释放名额，
+    // 再恢复上游，不会以短间隔反复撞 1009。
     ASR_UPSTREAM_ROTATE_AFTER_MS: 210_000,
+    ASR_UPSTREAM_ROTATION_COOLDOWN_MS: 35_000,
+    ASR_CONCURRENCY_RETRY_BASE_MS: 30_000,
+    ASR_CONCURRENCY_RETRY_MAX_MS: 90_000,
     // 上游 LM 模型可能长时间只发 TranscriptionResultChanged 而不发
     // SentenceEnd；实时草稿不能因此一直堆在顶部卡片。达到这个间隔后，
     // 共享会话会把已确认的 partial 前缀落成一条 draft，后续稳定稿再替换它。
@@ -507,8 +545,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         const messageText = message?.header?.status_message || "ASR failed";
         console.error(`[asr] upstream task failed meeting=${meetingId}: ${messageText}`);
         safeSend({ type: "status", status: "upstream_reconnecting", reason: messageText });
+        // 由 close 事件统一安排重连。此前这里先 schedule、close 回调又 schedule，
+        // 新连接可能在旧任务尚未释放前建立，从而触发 AIT 1009 并发限制。
         if (current.readyState === WebSocket.OPEN) current.close(3000, "task failed");
-        scheduleUpstreamReconnect("task_failed");
+        else scheduleUpstreamReconnect(messageText);
         return;
       }
 
@@ -540,14 +580,17 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (upstreamStopped || client.readyState !== WebSocket.OPEN) return;
     if (upstreamReconnectTimer) clearTimeout(upstreamReconnectTimer);
     upstreamReconnectAttempt += 1;
-    // 上游任务轮换/内部错误需要短暂退避，但不能固定等待 30~90 秒：
-    // pending 音频只有有限窗口，过长退避会让用户看到“实时转写停止”。
-    // 真正的并发限制仍逐次增加退避，且最多 20 秒。
-    const isConcurrencyLimit = /too many connections|1009|1011|internal error/i.test(String(reason));
-    const delay = isConcurrencyLimit
-      ? Math.min(5_000 * upstreamReconnectAttempt, 20_000)
-      : Math.min(800 * 2 ** Math.min(upstreamReconnectAttempt - 1, 4), 8_000);
-    safeSend({ type: "status", status: "upstream_reconnecting", reason, attempt: upstreamReconnectAttempt, delay });
+    const plan = getUpstreamReconnectPlan(reason, upstreamReconnectAttempt, config);
+    const { delay, isConcurrencyLimit, isPlannedRotation } = plan;
+    safeSend({
+      type: "status",
+      status: "upstream_reconnecting",
+      reason,
+      attempt: upstreamReconnectAttempt,
+      delay,
+      recoveryMode: isConcurrencyLimit ? "concurrency_cooldown" : (isPlannedRotation ? "rotation_cooldown" : "reconnect"),
+      stableTranscriptContinues: Boolean(isConcurrencyLimit || isPlannedRotation),
+    });
     upstreamReconnectTimer = setTimeout(() => {
       upstreamReconnectTimer = null;
       connectUpstream();
@@ -743,11 +786,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
             return;
           }
           asrNoFirstResultReconnectAttempt += 1;
-          // 关闭该上游任务并执行受限重连——重连成功后 started 会重置 firstAsrResult 检测
+          // 关闭该上游任务；由 close 事件统一安排受控重连。若这里立刻 schedule，
+          // 会和 close 回调重复安排，可能在旧任务未释放时抢占 AIT 并发名额。
           if (upstream?.readyState === WebSocket.OPEN) {
             try { upstream.close(4000, "no_first_result"); } catch { /* ignore */ }
+          } else {
+            scheduleUpstreamReconnect("asr_no_first_result");
           }
-          scheduleUpstreamReconnect("asr_no_first_result");
         }, 12_000);
       }
       return;
