@@ -134,6 +134,45 @@ test("文件 ASR 直接插入稳定稿后必须通知自动分析", async () => 
   assert.deepEqual(notifications, [{ meetingId: 77, stableRevision: 7 }]);
 });
 
+test("尾段 deadline 后返回的文件稿不得再写入稳定稿", async () => {
+  const controller = new AbortController();
+  let storeWrites = 0;
+  const fileResponse = {
+    ok: true,
+    text: JSON.stringify({ result: { text: "迟到的文件稿", segments: [{ text: "迟到的文件稿", start_time: 0, end_time: 1 }] } }),
+  };
+  const service = new RollingTranscriptService({
+    createWindowRun: async () => { storeWrites += 1; return 1; },
+    listWindowTranscriptRows: async () => { storeWrites += 1; return []; },
+    getPreviousStableText: async () => "",
+    insertFileAsrStableSegments: async () => { storeWrites += 1; return { insertedCount: 1, insertedIds: [1], stableRevision: 1 }; },
+  }, {
+    callFileTranscription: async () => {
+      controller.abort();
+      return fileResponse;
+    },
+    callFileTranscriptionByUrl: async () => {
+      controller.abort();
+      return fileResponse;
+    },
+  });
+
+  await assert.rejects(
+    service.correctWindow({
+      meetingId: 78,
+      pcm: Buffer.alloc(16000 * 2),
+      windowStartAudioMs: 0,
+      windowEndAudioMs: 1000,
+      centerStartAudioMs: 0,
+      centerEndAudioMs: 1000,
+      abortSignal: controller.signal,
+      getHotwords: async () => [],
+    }),
+    { name: "AbortError" },
+  );
+  assert.equal(storeWrites, 0, "deadline 后即使 ASR 返回成功，也不能删除或插入任何转写行");
+});
+
 test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残片", async () => {
   const calls = { deleted: [], inserted: [], finalized: [], applied: 0, notifications: [] };
   const rows = [
@@ -300,6 +339,7 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
   const events = [];
   let resolveFirstCorrection;
   let correctionCalls = 0;
+  const correctionAbortSignals = [];
   let forceCalls = 0;
   const deferredFirstCorrection = new Promise((resolve) => { resolveFirstCorrection = resolve; });
   const sealingClient = {
@@ -378,8 +418,9 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
       events.push("force-realtime-fallback");
       return 1;
     },
-    performRollingTranscriptCorrection: async () => {
+    performRollingTranscriptCorrection: async ({ abortSignal }) => {
       correctionCalls += 1;
+      correctionAbortSignals.push(abortSignal || null);
       events.push(`file-window-${correctionCalls}`);
       if (correctionCalls === 1) return deferredFirstCorrection;
       return { lastProcessedTranscriptId: 0 };
@@ -432,6 +473,7 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.ok(correctionCalls >= 2, "封存必须继续处理剩余尾窗");
+  assert.ok(correctionAbortSignals[1] instanceof AbortSignal, "会中已启动窗口递归出的尾窗必须继承封存 deadline");
   assert.equal(forceCalls, 1, "所有尾窗排空后才能用实时稿兜底");
   assert.ok(events.indexOf("force-realtime-fallback") > events.lastIndexOf(`file-window-${correctionCalls}`));
   sealingClient.handlers.get("close")();

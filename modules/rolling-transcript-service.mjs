@@ -24,6 +24,13 @@ import {
   ROLLING_ASR_MODEL, ROLLING_ASR_MIN_WINDOW_OVERLAP_RATIO,
 } from "./config.mjs";
 
+function throwIfAborted(abortSignal) {
+  if (!abortSignal?.aborted) return;
+  const error = new Error("rolling_correction_aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
 /**
  * RollingTranscriptService：滚动 ASR 稳定稿校正服务。
  * 依赖注入 RollingStore（SQLite/MySQL 各自实现）+ AI 调用函数（callFileTranscription 等），
@@ -63,10 +70,12 @@ export class RollingTranscriptService {
     sourceSpeechIntervals = [],
     forcedBoundary = false,
     allowBoundaryRows = false,
+    abortSignal = null,
     getHotwords = async () => "",
     applyGlossary = (text) => text,
     formatTime = (seconds) => String(seconds),
   }) {
+    throwIfAborted(abortSignal);
     const wav = wrapPcm16AsWav(pcm, 16000);
     const requestDurationSeconds = pcm.length / (16000 * 2);
     const fileName = `meeting-${Number(meetingId || 1)}-rolling-${Date.now()}-${randomUUID().slice(0, 8)}.wav`;
@@ -84,19 +93,30 @@ export class RollingTranscriptService {
     } catch { /* ignore glossary errors */ }
 
     try {
+      throwIfAborted(abortSignal);
       let response;
       let submissionMode = "base64";
       if (AIT_PUBLIC_BASE_URL) {
         const audioUrl = `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${encodeURIComponent(fileName)}`;
         submissionMode = "url";
-        response = await this.callFileTranscriptionByUrl(audioUrl, { fileName, model, timeoutMs: ROLLING_ASR_URL_TIMEOUT_MS, hotword: hotwordText });
+        response = await this.callFileTranscriptionByUrl(audioUrl, {
+          fileName, model, timeoutMs: ROLLING_ASR_URL_TIMEOUT_MS, hotword: hotwordText, abortSignal,
+        });
+        throwIfAborted(abortSignal);
         if (!response.ok) {
           submissionMode = "base64_fallback";
-          response = await this.callFileTranscription(wav, { fileName, model, timeoutMs: ROLLING_ASR_TIMEOUT_MS, hotword: hotwordText });
+          response = await this.callFileTranscription(wav, {
+            fileName, model, timeoutMs: ROLLING_ASR_TIMEOUT_MS, hotword: hotwordText, abortSignal,
+          });
         }
       } else {
-        response = await this.callFileTranscription(wav, { fileName, model, timeoutMs: ROLLING_ASR_TIMEOUT_MS, hotword: hotwordText });
+        response = await this.callFileTranscription(wav, {
+          fileName, model, timeoutMs: ROLLING_ASR_TIMEOUT_MS, hotword: hotwordText, abortSignal,
+        });
       }
+      // 网络请求即使在 deadline 后才返回，也绝不能继续写入窗口审计、删除或插入。
+      // 否则 realtime fallback 与迟到的文件稿会双写同一时间段。
+      throwIfAborted(abortSignal);
       if (!response.ok) throw new Error(`file transcription failed: ${response.text.slice(0, 500)}`);
       const payload = JSON.parse(response.text);
       const result = payload?.result || payload?.data?.result || payload?.data || payload;
@@ -110,6 +130,7 @@ export class RollingTranscriptService {
 
       let windowRunId = 0;
       try {
+        throwIfAborted(abortSignal);
         windowRunId = await this.store.createWindowRun(meetingId, {
           model, windowStartAudioMs, windowEndAudioMs,
           trimLeadingSeconds, trimTrailingSeconds, submissionMode, correctedText, result,
@@ -118,6 +139,7 @@ export class RollingTranscriptService {
         console.warn(`[rolling-asr] audit persist failed meeting=${meetingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
 
+      throwIfAborted(abortSignal);
       const rows = await this.store.listWindowTranscriptRows(meetingId, effectiveWindowStartMs, effectiveWindowEndMs, startTranscriptId, endTranscriptId);
       const previousStableText = await this.store.getPreviousStableText(meetingId, effectiveWindowStartMs);
 
@@ -160,6 +182,7 @@ export class RollingTranscriptService {
           speakerRows: rows,
           model,
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+          abortSignal,
         });
         if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_timing", inserted.insertedCount, null);
         // 直接插入的文件稿同样已经是新的稳定事实。必须触发后续自动分析，
@@ -218,6 +241,7 @@ export class RollingTranscriptService {
           speakerRows: candidateRows,
           model,
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+          abortSignal,
         });
         if (!replacement.insertedCount) throw new Error("unable to align corrected transcript to rows");
         if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_fallback", replacement.insertedCount, replacement.compositionTrace);
@@ -242,6 +266,7 @@ export class RollingTranscriptService {
         };
       }
 
+      throwIfAborted(abortSignal);
       const diarizationSegments = this.diarizeSpeakerSegments
         ? await this.diarizeSpeakerSegments({ meetingId, wav, audioPath })
         : [];
@@ -273,6 +298,7 @@ export class RollingTranscriptService {
           speakerRows: candidateRows,
           model,
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+          abortSignal,
         });
         if (replacement.insertedCount > 0) {
           if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_partial_alignment", replacement.insertedCount, replacement.compositionTrace);
@@ -301,6 +327,7 @@ export class RollingTranscriptService {
       }
       const diarizedSpeakers = mapDiarizationSpeakersToRows(matchedCandidateRows, aligned, diarizationSegments, wav.length / (16000 * 2), trimLeadingSeconds);
 
+      throwIfAborted(abortSignal);
       const applied = await this.store.applyStableCorrection(meetingId, {
         candidateRows: matchedCandidateRows,
         aligned,
@@ -359,7 +386,9 @@ export class RollingTranscriptService {
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     glossaryEntries = [],
+    abortSignal = null,
   }) {
+    throwIfAborted(abortSignal);
     const previewAuditTrace = {};
     const preview = getAbsoluteFileSegments(
       fileResult,
@@ -378,6 +407,7 @@ export class RollingTranscriptService {
     if (!preview.length) return { insertedCount: 0, deletedCount: 0, lastTranscriptId: 0 };
 
     // 删除窗口内旧段（通过 store，事务）
+    throwIfAborted(abortSignal);
     const deletedCount = await this.store.deleteWindowTranscriptRows(meetingId, effectiveWindowStartMs, effectiveWindowEndMs);
 
     // 插入新的 canonical 段
@@ -397,6 +427,7 @@ export class RollingTranscriptService {
       hotwords,
       glossaryEntries,
       auditTrace: {},
+      abortSignal,
     });
 
     return {
@@ -435,7 +466,9 @@ export class RollingTranscriptService {
     auditTrace = {},
     glossaryEntries = [],
     audioPath = "",
+    abortSignal = null,
   }) {
+    throwIfAborted(abortSignal);
     const commitStartMs = Number(effectiveWindowStartMs || 0) > 0
       ? Number(effectiveWindowStartMs)
       : Number(windowStartAudioMs || 0) + Math.max(0, Number(trimLeadingSeconds || 0)) * 1000;
@@ -488,6 +521,7 @@ export class RollingTranscriptService {
     }
 
     // DB 插入通过 store（含重叠保护 + 事务）
+    throwIfAborted(abortSignal);
     const { insertedCount, insertedIds, stableRevision } = await this.store.insertFileAsrStableSegments(meetingId, {
       segments: segments.map((segment) => ({
         time: formatMeetingElapsedTime(segment.startMs / 1000),

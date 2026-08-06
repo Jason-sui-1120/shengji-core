@@ -274,6 +274,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let failedRollingWindows = [];
   let rollingRetryRunning = false;
   let rollingRetryTimer = null;
+  // 用户点击结束后，所有仍可能触发文件稿落库的路径都必须共享同一个取消信号。
+  // 否则第一扇尾窗完成后递归提交的下一扇窗口会脱离 70 秒 deadline，晚于
+  // realtime fallback 写入同一时间段，重新造成重复稳定稿。
+  let sealingAbortSignal = null;
   let sealingPromise = null;
   let stopRequested = false;
   let lastSpeakerIdentifyAt = 0;
@@ -867,6 +871,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       const tailDeadline = Date.now() + tailDeadlineMs;
       const tailAbortController = new AbortController();
       const tailAbortSignal = tailAbortController.signal;
+      sealingAbortSignal = tailAbortSignal;
       // deadline 到达后立即取消本轮未完成任务
       const tailDeadlineTimer = setTimeout(() => {
         console.error(`[seal] tail deadline reached meeting=${meetingId}，取消本轮未完成任务`);
@@ -979,7 +984,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         return;
       }
       safeSend({ type: "status", status: "sealed" });
-    })().finally(() => deps.endMeetingAiJob(meetingId));
+    })().finally(() => {
+      sealingAbortSignal = null;
+      deps.endMeetingAiJob(meetingId);
+    });
     return sealingPromise;
   }
 
@@ -1222,10 +1230,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         console.error(`[rolling-asr] stopped non-progressing final drain meeting=${meetingId} start=${windowStartAudioMs} next=${rollingAudioStartMs}`);
       }
       if (correctionSucceeded && rollingTimelineAdvanced && (isFinal || shouldSealTail) && getRollingWindowPlan(true)) {
-        await triggerRollingCorrection(true, 0);
+        // 递归尾窗必须沿用本次 seal 的 AbortSignal。此前这里传入 0，下一扇
+        // 窗口会在 deadline 后继续落库，和 forced realtime fallback 双写。
+        await triggerRollingCorrection(true, sealingAbortSignal || abortSignal);
       }
       if (!isFinal && correctionSucceeded && shouldDrainQueued && !rollingRetryRunning) {
-        void triggerRollingCorrection(false);
+        // 用户已点击结束时，原本会中队列的下一扇也必须升级为 final，并继承
+        // seal deadline；不能先按非 final 路径提交一个脱离 deadline 的窗口。
+        void triggerRollingCorrection(Boolean(sealingAbortSignal), sealingAbortSignal);
       }
       if (!isFinal && failedRollingWindows.length) scheduleFailedRollingRetry();
       deps.endMeetingAiJob(meetingId);
@@ -1238,17 +1250,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const delay = Math.min(60_000, 5_000 * 2 ** Math.max(0, nextAttempt));
     rollingRetryTimer = setTimeout(() => {
       rollingRetryTimer = null;
-      void retryFailedRollingWindows(false);
+      void retryFailedRollingWindows(false, sealingAbortSignal);
     }, delay);
   }
 
-  async function retryFailedRollingWindows(isFinal) {
+  async function retryFailedRollingWindows(isFinal, abortSignal = null) {
     if (rollingRetryRunning) return false;
     rollingRetryRunning = true;
     deps.beginMeetingAiJob(meetingId);
     let allResolved = true;
     try {
       while (failedRollingWindows.length) {
+        if (abortSignal?.aborted) {
+          allResolved = false;
+          break;
+        }
         const pending = failedRollingWindows.shift();
         if (!pending) continue;
         if (pending.attempt >= deps.config.ROLLING_ASR_MAX_RETRIES) {
@@ -1275,7 +1291,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
             sourceSpeechIntervals: pending.sourceSpeechIntervals,
             forcedBoundary: Boolean(pending.forcedBoundary),
             allowBoundaryRows: Boolean(isFinal),
+            abortSignal,
           });
+          if (abortSignal?.aborted) {
+            allResolved = false;
+            failedRollingWindows.unshift(pending);
+            break;
+          }
           rollingStartTranscriptId = Math.max(rollingStartTranscriptId, Number(result.lastProcessedTranscriptId || pending.startTranscriptId));
           rollingWindowHasOverlap = true;
           safeSend({ type: "status", status: "rolling_correction_complete", retry: true, ...result });
@@ -1293,7 +1315,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       rollingRetryRunning = false;
       deps.endMeetingAiJob(meetingId);
     }
-    if (!allResolved && failedRollingWindows.some((window) => Number(window.attempt || 0) < deps.config.ROLLING_ASR_MAX_RETRIES)) scheduleFailedRollingRetry();
+    if (!abortSignal?.aborted && !allResolved && failedRollingWindows.some((window) => Number(window.attempt || 0) < deps.config.ROLLING_ASR_MAX_RETRIES)) scheduleFailedRollingRetry();
     if (allResolved && getRollingWindowPlan(false)) void triggerRollingCorrection(false);
     return allResolved;
   }

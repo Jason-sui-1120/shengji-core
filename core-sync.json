@@ -1,5 +1,5 @@
 {
-  "version": "1.14.1",
+  "version": "1.14.2",
   "releasedAt": "2026-08-06",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -65,7 +65,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "e93b86036b48ac9c108f2ac50e213b5dab36f6d6d65259317eeab5fa74ef9ed0"
+      "sha256": "8e45388e18c0d6276ab9a8e1bfdf9a20b2f572579957f00098fb11dbc04af04d"
     },
     {
       "file": "model-routing.mjs",
@@ -81,7 +81,7 @@
     },
     {
       "file": "rolling-transcript-service.mjs",
-      "sha256": "0237c25ab0f042a96791c7adf3ce689ca6e99b34b2229f5a64d593c97eb43c16"
+      "sha256": "d99eeadbde2408b41e8402d68b73f5cea4995ea6723eb7ad4181644efa2891bb"
     },
     {
       "file": "rolling-window-plan.mjs",
@@ -227,7 +227,7 @@
     },
     {
       "file": "live-asr-session.test.mjs",
-      "sha256": "412707dbc679ca23e54426c30bd36f80f8becafced2624e17f935d8ebec371f5"
+      "sha256": "71d1cfff3f215a816c3c603d2004309d56cc348d625f73a8d74ccd185adac16b"
     },
     {
       "file": "model-routing.test.mjs",
@@ -367,11 +367,11 @@
     },
     {
       "file": "ARCHITECTURE.md",
-      "sha256": "f8d65f90e03a1147a81d61da206be566104a1f12789a4cc2d4121f79061f0c18"
+      "sha256": "7ad5cbee68bbb156610920a9865e04b05387474b9979da75470684fc8f84e457"
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "d6d64ab35d430c190660169359635d359fe5c8fb44512f5d443a4af1a9e3c7ab"
+      "sha256": "9c5db598f31ccfc8739196d042e0a8c4ed53917444cce0ae85e4c1807c3e6531"
     },
     {
       "file": "README.md",
