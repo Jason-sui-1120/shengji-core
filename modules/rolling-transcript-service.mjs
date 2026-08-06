@@ -157,6 +157,7 @@ export class RollingTranscriptService {
           effectiveWindowEndMs,
           previousStableText,
           sourceSpeechIntervals,
+          speakerRows: rows,
           model,
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
         });
@@ -214,6 +215,7 @@ export class RollingTranscriptService {
           effectiveWindowEndMs,
           sourceSpeechIntervals,
           previousStableText,
+          speakerRows: candidateRows,
           model,
           hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
         });
@@ -248,6 +250,55 @@ export class RollingTranscriptService {
       // 都标 stable，会把未覆盖的实时残片伪装成定稿，随后与文件稿并排保留，
       // 造成重复文本和稳定稿评分虚高。
       const matchedCandidateRows = getMappedCandidateRows(candidateRows, aligned);
+      // 对齐只覆盖了一部分实时草稿时，不能把“已映射部分”更新为 stable、
+      // 其余草稿无限遗留到封存时再全部降级成 fallback。那样同一段时间会同时
+      // 存在文件稿和实时残片，最终拼接必然重复。
+      //
+      // 文件窗口已经成功返回可用结果，因此此时以该窗口的 canonical 文件稿整体
+      // 替换未人工编辑的自动行；人工编辑行仍由 store 的保护条件保留。这比让
+      // 未映射残片在后续窗口/封存阶段不断累积更可预测，也符合“稳定稿优先”的
+      // 单一事实来源约束。
+      if (shouldReplaceWindowForPartialAlignment(candidateRows, aligned)) {
+        const replacement = await this.replaceWindowWithFileSegments({
+          meetingId,
+          fileResult: result,
+          trimLeadingSeconds,
+          trimTrailingSeconds,
+          windowStartAudioMs,
+          windowEndAudioMs,
+          effectiveWindowStartMs,
+          effectiveWindowEndMs,
+          sourceSpeechIntervals,
+          previousStableText,
+          speakerRows: candidateRows,
+          model,
+          hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+        });
+        if (replacement.insertedCount > 0) {
+          if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_partial_alignment", replacement.insertedCount, replacement.compositionTrace);
+          await this.afterStableCorrection(meetingId, replacement.stableRevision);
+          return {
+            ok: true,
+            updatedCount: 0,
+            insertedCount: replacement.insertedCount,
+            skippedCount: 0,
+            lastProcessedTranscriptId: replacement.lastTranscriptId || Number(startTranscriptId || 0),
+            model,
+            submissionMode,
+            sourceLength: correctedText.length,
+            hotwordCount,
+            hotwordChars: hotwordText.length,
+            stableRevision: replacement.stableRevision,
+            alignmentMode: "file_replace_partial_alignment",
+            consistency: "disputed",
+            windowStartAudioMs,
+            windowEndAudioMs,
+            commitEndAudioMs: effectiveWindowEndMs,
+            unmatchedCandidateCount: Math.max(0, candidateRows.length - matchedCandidateRows.length),
+          };
+        }
+        console.warn(`[rolling-asr] partial alignment replacement produced no canonical segments meeting=${meetingId}; preserving mapped-row fallback`);
+      }
       const diarizedSpeakers = mapDiarizationSpeakersToRows(matchedCandidateRows, aligned, diarizationSegments, wav.length / (16000 * 2), trimLeadingSeconds);
 
       const applied = await this.store.applyStableCorrection(meetingId, {
@@ -304,6 +355,7 @@ export class RollingTranscriptService {
     effectiveWindowEndMs = 0,
     sourceSpeechIntervals = [],
     previousStableText = "",
+    speakerRows = [],
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     glossaryEntries = [],
@@ -340,6 +392,7 @@ export class RollingTranscriptService {
       effectiveWindowEndMs,
       previousStableText,
       sourceSpeechIntervals,
+      speakerRows,
       model,
       hotwords,
       glossaryEntries,
@@ -376,6 +429,7 @@ export class RollingTranscriptService {
     effectiveWindowEndMs = 0,
     previousStableText = "",
     sourceSpeechIntervals = [],
+    speakerRows = [],
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     auditTrace = {},
@@ -389,7 +443,7 @@ export class RollingTranscriptService {
       ? Number(effectiveWindowEndMs)
       : Number(windowEndAudioMs || Number.MAX_SAFE_INTEGER) - Math.max(0, Number(trimTrailingSeconds || 0)) * 1000;
 
-    const candidateSegments = getAbsoluteFileSegments(
+    const candidateSegments = applySpeakerHintsToFileSegments(getAbsoluteFileSegments(
       fileResult,
       trimLeadingSeconds,
       windowStartAudioMs,
@@ -397,7 +451,7 @@ export class RollingTranscriptService {
       trimTrailingSeconds,
       Math.max(0, Number(windowEndAudioMs || 0) - Number(windowStartAudioMs || 0)),
       { sourceSpeechIntervals, commitStartMs, commitEndMs, auditTrace },
-    ).map((segment) => ({
+    ), speakerRows).map((segment) => ({
       ...segment,
       text: applyGlossaryAliasCorrections(segment.text, glossaryEntries) || segment.text,
       startMs: Math.max(0, Number(segment.startMs || 0)),
@@ -439,7 +493,7 @@ export class RollingTranscriptService {
         time: formatMeetingElapsedTime(segment.startMs / 1000),
         speaker: segment.speaker || "待识别",
         text: segment.text,
-        speakerSource: "file_asr",
+        speakerSource: segment.speakerSource || "file_asr",
         startMs: Math.max(commitStartMs, Math.round(segment.startMs)),
         endMs: Math.min(commitEndMs, Math.max(Math.round(segment.endMs), Math.round(segment.startMs) + 1)),
       })),
@@ -471,6 +525,63 @@ export class RollingTranscriptService {
  * 未映射行仍保留 draft，等待下一窗口或封存补偿，绝不能提前标记成 stable。
  */
 export function getMappedCandidateRows(candidateRows = [], aligned = []) {
-  const alignedRowIds = new Set(aligned.map((item) => Number(item?.id)).filter(Number.isFinite));
+  // `alignFileSegmentsToRowsByAbsoluteTime` 会为每一条候选行生成结果；未命中
+  // 文件段的行只是 `fileSegmentCount: 0` 的占位项，不能被误认为已校准。
+  // 其他对齐模式（single/timing_fallback）没有该字段，表示它们确实为整批行
+  // 分配了文件稿，仍按原有语义全部视为已映射。
+  const hasFileSegmentEvidence = aligned.some((item) => Object.hasOwn(item || {}, "fileSegmentCount"));
+  const alignedRowIds = new Set(aligned
+    .filter((item) => !hasFileSegmentEvidence || Number(item?.fileSegmentCount || 0) > 0)
+    .map((item) => Number(item?.id))
+    .filter(Number.isFinite));
   return candidateRows.filter((row) => alignedRowIds.has(Number(row?.id)));
+}
+
+/**
+ * 文件稿已经可用但无法覆盖所有自动草稿时，必须整体替换这个稳定窗口。
+ * 否则未覆盖的草稿会在封存阶段被降级为 fallback，与文件稿并列导致重复。
+ */
+export function shouldReplaceWindowForPartialAlignment(candidateRows = [], aligned = []) {
+  const candidates = Array.isArray(candidateRows) ? candidateRows : [];
+  if (!candidates.length) return false;
+  return getMappedCandidateRows(candidates, aligned).length < candidates.length;
+}
+
+/**
+ * 文件 ASR 的文本是窗口的唯一稳定事实，但它通常不带可展示的说话人名称。
+ * 在整体替换自动行前，把同一绝对时间轴上已有的、非“待识别”的说话人作为
+ * 保守提示继承下来：不改变人工标注，也不伪造新的声纹识别结果。
+ */
+export function applySpeakerHintsToFileSegments(segments = [], speakerRows = []) {
+  const usableRows = (Array.isArray(speakerRows) ? speakerRows : [])
+    .map((row) => ({
+      speaker: String(row?.speaker || "").trim(),
+      speakerSource: String(row?.speakerSource || row?.speaker_source || "").trim(),
+      speakerConfidence: Number(row?.speakerConfidence ?? row?.speaker_confidence ?? 0),
+      startMs: Number(row?.audioStartMs ?? row?.audio_start_ms ?? 0),
+      endMs: Number(row?.audioEndMs ?? row?.audio_end_ms ?? 0),
+    }))
+    .filter((row) => row.speaker && row.speaker !== "待识别" && row.endMs > row.startMs);
+  if (!usableRows.length) return Array.isArray(segments) ? segments : [];
+
+  return (Array.isArray(segments) ? segments : []).map((segment) => {
+    const startMs = Number(segment?.startMs || 0);
+    const endMs = Number(segment?.endMs || 0);
+    let winner = null;
+    let bestOverlap = 0;
+    for (const row of usableRows) {
+      const overlap = Math.max(0, Math.min(endMs, row.endMs) - Math.max(startMs, row.startMs));
+      if (overlap > bestOverlap || (overlap === bestOverlap && winner && row.speakerConfidence > winner.speakerConfidence)) {
+        winner = row;
+        bestOverlap = overlap;
+      }
+    }
+    if (!winner || bestOverlap <= 0) return segment;
+    return {
+      ...segment,
+      speaker: winner.speaker,
+      speakerSource: winner.speakerSource || "rolling_realtime_hint",
+      speakerConfidence: winner.speakerConfidence || undefined,
+    };
+  });
 }

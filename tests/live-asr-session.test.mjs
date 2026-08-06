@@ -134,6 +134,78 @@ test("文件 ASR 直接插入稳定稿后必须通知自动分析", async () => 
   assert.deepEqual(notifications, [{ meetingId: 77, stableRevision: 7 }]);
 });
 
+test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残片", async () => {
+  const calls = { deleted: [], inserted: [], finalized: [], applied: 0, notifications: [] };
+  const rows = [
+    {
+      id: 901,
+      text: "文件稿覆盖的第一句",
+      speaker: "说话人 1",
+      audioStartMs: 100,
+      audioEndMs: 1900,
+    },
+    {
+      id: 902,
+      text: "未被文件稿覆盖的实时残片",
+      speaker: "说话人 2",
+      audioStartMs: 2100,
+      audioEndMs: 3900,
+    },
+  ];
+  const fileResponse = {
+    ok: true,
+    text: JSON.stringify({
+      result: {
+        text: "文件稿覆盖的第一句",
+        segments: [{ text: "文件稿覆盖的第一句", start_time: 0.1, end_time: 1.9 }],
+      },
+    }),
+  };
+  const service = new RollingTranscriptService({
+    createWindowRun: async () => 91,
+    finalizeWindowRun: async (...args) => { calls.finalized.push(args); },
+    listWindowTranscriptRows: async () => rows,
+    getPreviousStableText: async () => "",
+    deleteWindowTranscriptRows: async (...args) => { calls.deleted.push(args); return 2; },
+    insertFileAsrStableSegments: async (_meetingId, { segments }) => {
+      calls.inserted.push(segments);
+      return { insertedCount: segments.length, insertedIds: [9901], stableRevision: 19 };
+    },
+    applyStableCorrection: async () => {
+      calls.applied += 1;
+      throw new Error("部分对齐不应只更新命中的实时行");
+    },
+  }, {
+    callFileTranscription: async () => fileResponse,
+    callFileTranscriptionByUrl: async () => fileResponse,
+    afterStableCorrection: async (meetingId, stableRevision) => calls.notifications.push({ meetingId, stableRevision }),
+  });
+
+  const result = await service.correctWindow({
+    meetingId: 91,
+    pcm: Buffer.alloc(4 * 16000 * 2),
+    startTranscriptId: 900,
+    endTranscriptId: 902,
+    windowStartAudioMs: 0,
+    windowEndAudioMs: 4000,
+    centerStartAudioMs: 0,
+    centerEndAudioMs: 4000,
+    getHotwords: async () => [],
+  });
+
+  assert.equal(result.alignmentMode, "file_replace_partial_alignment");
+  assert.equal(result.insertedCount, 1);
+  assert.equal(result.unmatchedCandidateCount, 1);
+  assert.deepEqual(calls.deleted, [[91, 0, 4000]]);
+  assert.equal(calls.inserted.length, 1);
+  assert.equal(calls.inserted[0][0].text, "文件稿覆盖的第一句");
+  assert.equal(calls.inserted[0][0].speaker, "说话人 1", "整体替换不得把已有说话人轨道退化为待识别");
+  assert.equal(calls.inserted[0][0].speakerSource, "rolling_realtime_hint");
+  assert.equal(calls.applied, 0);
+  assert.deepEqual(calls.notifications, [{ meetingId: 91, stableRevision: 19 }]);
+  assert.equal(calls.finalized[0][1], "file_replace_partial_alignment");
+});
+
 test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿", async () => {
   const inserted = [];
   const realtimeClient = {

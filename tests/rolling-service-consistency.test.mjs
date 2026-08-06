@@ -18,7 +18,7 @@ const {
   isUsableTranscriptCorrection,
 } = transcriptAlign;
 const { composeCanonicalFileSegments } = transcriptComposer;
-const { getMappedCandidateRows } = await import(rollingModuleUrl);
+const { getMappedCandidateRows, shouldReplaceWindowForPartialAlignment, applySpeakerHintsToFileSegments } = await import(rollingModuleUrl);
 
 // 1070 风格 fixture：实时草稿行 + 文件 ASR 结果
 const fixtureRows = [
@@ -117,4 +117,32 @@ test("getMappedCandidateRows：未被文件稿覆盖的草稿不能伪装成稳�
     { id: 103, text: "稳定稿二" },
   ]);
   assert.deepEqual(mapped.map((row) => row.id), [101, 103]);
+});
+
+test("部分对齐：文件稿必须整体替换窗口，不能把残片留到封存时降级", () => {
+  const candidates = [
+    { id: 101, text: "文件稿已覆盖的草稿" },
+    { id: 102, text: "未覆盖且会造成重复的草稿残片" },
+  ];
+  assert.equal(shouldReplaceWindowForPartialAlignment(candidates, [
+    { id: 101, text: "文件稳定稿", fileSegmentCount: 1 },
+    // 对齐器为所有候选行返回占位项；没有文件段的占位项不得算作已映射。
+    { id: 102, text: "旧草稿", fileSegmentCount: 0 },
+  ]), true);
+  assert.equal(shouldReplaceWindowForPartialAlignment(candidates, [
+    { id: 101, text: "文件稳定稿一", fileSegmentCount: 1 },
+    { id: 102, text: "文件稳定稿二", fileSegmentCount: 1 },
+  ]), false);
+  assert.equal(shouldReplaceWindowForPartialAlignment([], []), false);
+});
+
+test("整体替换：稳定文本继承已有时间轴说话人，不退化为待识别", () => {
+  const [segment] = applySpeakerHintsToFileSegments([
+    { text: "文件稳定稿", startMs: 1_000, endMs: 2_000 },
+  ], [
+    { speaker: "待识别", audioStartMs: 900, audioEndMs: 1_100 },
+    { speaker: "说话人 2", speakerSource: "rolling_diarization", audioStartMs: 950, audioEndMs: 2_050 },
+  ]);
+  assert.equal(segment.speaker, "说话人 2");
+  assert.equal(segment.speakerSource, "rolling_diarization");
 });
