@@ -18,7 +18,12 @@ const {
   isUsableTranscriptCorrection,
 } = transcriptAlign;
 const { composeCanonicalFileSegments } = transcriptComposer;
-const { getMappedCandidateRows, shouldReplaceWindowForPartialAlignment, applySpeakerHintsToFileSegments } = await import(rollingModuleUrl);
+const {
+  RollingTranscriptService,
+  getMappedCandidateRows,
+  shouldReplaceWindowForPartialAlignment,
+  applySpeakerHintsToFileSegments,
+} = await import(rollingModuleUrl);
 
 // 1070 风格 fixture：实时草稿行 + 文件 ASR 结果
 const fixtureRows = [
@@ -145,4 +150,36 @@ test("整体替换：稳定文本继承已有时间轴说话人，不退化为�
   ]);
   assert.equal(segment.speaker, "说话人 2");
   assert.equal(segment.speakerSource, "rolling_diarization");
+});
+
+test("稳定文件稿替换：删除旧自动行与写入 canonical 段必须交给同一 store 事务", async () => {
+  const calls = [];
+  const service = new RollingTranscriptService({
+    async insertFileAsrStableSegments(meetingId, payload) {
+      calls.push({ meetingId, payload });
+      return { insertedCount: 1, insertedIds: [501], stableRevision: 12, deletedCount: 3 };
+    },
+    // 如果重新出现“先删再插”的两段式实现，本测试会立即失败。
+    async deleteWindowTranscriptRows() {
+      throw new Error("不得在文件插入事务外单独删除草稿");
+    },
+  });
+
+  const result = await service.replaceWindowWithFileSegments({
+    meetingId: 77,
+    fileResult: {
+      segments: [{ text: "文件稳定稿", start_time: 1, end_time: 4 }],
+      words: [{ text: "文件稳定稿", start_time: 1, end_time: 4 }],
+    },
+    windowStartAudioMs: 0,
+    windowEndAudioMs: 8_000,
+    effectiveWindowStartMs: 1_000,
+    effectiveWindowEndMs: 5_000,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].meetingId, 77);
+  assert.equal(calls[0].payload.replaceExistingAutoRows, true);
+  assert.equal(result.deletedCount, 3);
+  assert.equal(result.compositionTrace.replacementInTransaction, true);
 });

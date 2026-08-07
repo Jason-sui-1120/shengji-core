@@ -903,9 +903,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         // 随后真正的尾窗文件稿又插入同一段时间，形成重复文本和时间轴重叠。
         // 必须在全局 deadline 内排空正在执行的窗口及其递归尾窗，确认没有可提交
         // 的中心区间后，才能决定是否使用实时稿兜底。
+        // 外层等待与每个尾窗请求都必须共用同一个绝对 deadline。不能再额外
+        // 叠加一个更短的配置超时，否则文件 ASR 已在正常返回、但尚未到 70 秒
+        // 总上限时就被 forced-stable 抢先覆盖，造成尾段永久残留实时草稿。
+        const tailDrainBudgetMs = Math.max(1, tailDeadline - Date.now());
         tailDrainCompleted = await withTimeout(
           drainFinalRollingCorrections(tailAbortSignal, tailDeadline),
-          config.TAIL_STABILIZATION_TIMEOUT_MS,
+          tailDrainBudgetMs,
           "tail_stabilization_total",
         );
       } catch (error) {
@@ -925,7 +929,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         }
       }
       clearTimeout(tailDeadlineTimer);
-      await deps.finalizeMeetingSourceAudio(meetingId, reason === "stop" ? "complete" : "partial");
+      // 用户明确点击结束时，当前 WebSocket 仍在连接表中是正常状态；此时必须
+      // 强制把已写完的完整源录音封存，不能被“仍有连接”误判回 recording。
+      await deps.finalizeMeetingSourceAudio(
+        meetingId,
+        reason === "stop" ? "complete" : "partial",
+        { force: reason === "stop" },
+      );
       // 完整录音封存后再做一次会议级说话人校准。它不影响文字稳定化，但
       // 最终纪要必须使用这次校准后的说话人轨道，而不是窗口临时标签。
       try {

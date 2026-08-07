@@ -13,12 +13,7 @@ import { composeCanonicalFileSegments } from "./transcript-composer.mjs";
 import { computeTranscriptCoverage, planCoverageRepairWindows } from "./transcript-coverage.mjs";
 import { getAbsoluteFileSegments, getCharOverlapRatio, summarizeCompositionSegment, formatMeetingElapsedTime, getFileTimestampScale, normalizeFileTimestamp } from "./file-segments.mjs";
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
-import {
-  isUsableTranscriptCorrection, extractStableWindowText,
-  alignRollingCorrectionToRows, alignFileSegmentsToRowsByAbsoluteTime,
-  longestCommonSubsequenceLength, alignFileTextByTiming,
-  mapDiarizationSpeakersToRows, removeFillerWords, mergeTranscriptText,
-} from "./transcript-align.mjs";
+import { extractStableWindowText } from "./transcript-align.mjs";
 import {
   AIT_PUBLIC_BASE_URL, ROLLING_ASR_TIMEOUT_MS, ROLLING_ASR_URL_TIMEOUT_MS,
   ROLLING_ASR_MODEL, ROLLING_ASR_MIN_WINDOW_OVERLAP_RATIO,
@@ -60,10 +55,10 @@ export function boundSegmentsToCommitWindow(segments, { commitStartMs = 0, commi
 export class RollingTranscriptService {
   constructor(store, aiCalls = {}) {
     this.store = store;
-    // AI 调用注入（callFileTranscription/callFileTranscriptionByUrl/diarizeSpeakerSegments）
+    // AI 调用注入（callFileTranscription/callFileTranscriptionByUrl）。
+    // 说话人轨道由独立的声纹丰富任务处理，不再决定稳定文本落库路径。
     this.callFileTranscription = aiCalls.callFileTranscription;
     this.callFileTranscriptionByUrl = aiCalls.callFileTranscriptionByUrl;
-    this.diarizeSpeakerSegments = aiCalls.diarizeSpeakerSegments || null;
     // 旧链路副作用注入（快照刷新/自动分析调度），切换生产时由调用方提供。
     // 默认空操作（不阻塞服务自身逻辑，也不强依赖 index.mjs）。
     this.afterStableCorrection = typeof aiCalls.afterStableCorrection === "function"
@@ -185,203 +180,53 @@ export class RollingTranscriptService {
         return aStart - bStart || Number(a.id) - Number(b.id);
       });
 
-      // 无候选行（或没有实时草稿行）：直接插入文件 ASR 段为稳定稿。
-      // 必须传 effective 中心提交区间——否则落库退回请求上下文范围，
-      // 前置 8 秒重叠区会被当作稳定稿重复插入（银标重复主因之一）。
-      if (!candidateRows.length) {
-        const inserted = await this.insertFileAsrSegments({
-          meetingId,
-          fileResult: result,
-          trimLeadingSeconds,
-          trimTrailingSeconds,
-          windowStartAudioMs,
-          windowEndAudioMs,
-          effectiveWindowStartMs,
-          effectiveWindowEndMs,
-          previousStableText,
-          sourceSpeechIntervals,
-          speakerRows: rows,
-          model,
-          hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
-          abortSignal,
-        });
-        if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_timing", inserted.insertedCount, null);
-        // 直接插入的文件稿同样已经是新的稳定事实。必须触发后续自动分析，
-        // 否则界面会出现“已校准”但实时总结长期停在“等待首条稳定转写”。
-        if (inserted.insertedCount > 0) {
-          await this.afterStableCorrection(meetingId, inserted.stableRevision);
-        }
-        return {
-          ok: true,
-          updatedCount: 0,
-          insertedCount: inserted.insertedCount,
-          skippedCount: 0,
-          lastProcessedTranscriptId: inserted.lastTranscriptId || Number(startTranscriptId || 0),
-          model,
-          submissionMode,
-          hotwordCount,
-          hotwordChars: hotwordText.length,
-          stableRevision: inserted.stableRevision,
-          reason: inserted.insertedCount ? "file_segments_inserted" : (rows.length ? "no_transcript_rows_in_window" : "no_transcript_rows"),
-          alignmentMode: "file_timing",
-          windowStartAudioMs,
-          windowEndAudioMs,
-          commitEndAudioMs: effectiveWindowEndMs,
-          forcedBoundary,
-        };
-      }
-
-      // 有候选行：对齐文件稿 → 声纹分离投射说话人 → 原子应用稳定稿校正。
-      // 必须传 effective 中心提交区间（commitStartMs/commitEndMs）——
-      // 否则对齐层把请求上下文起点当提交起点，前一窗口重叠内容会拼进本窗稳定稿。
-      const alignment = await alignRollingCorrectionToRows(candidateRows, correctedText, result, trimLeadingSeconds, {
+      // 稳定稿只认文件 ASR：无论实时草稿是否恰好能文本对齐，成功返回的文件稿
+      // 都以同一条 canonical 路径原子替换本窗口内未人工编辑的自动行。
+      //
+      // 旧的三分支（无候选直接插入 / 部分对齐替换 / 完整对齐就地改写）会让同一
+      // 个文件窗口因实时草稿形态不同走出不同的落库语义。最坏情况下先删草稿、
+      // 后插文件稿不在同一事务，出现“草稿消失”或“只剩 realtime_fallback”。
+      // 统一替换后，实时 ASR 只承担低延迟预览和说话人提示；文件 ASR 才是稳定
+      // 文本的唯一事实来源。人工编辑行继续由 adapter 的 user_edited 保护条件保留。
+      const replacement = await this.replaceWindowWithFileSegments({
+        meetingId,
+        fileResult: result,
+        trimLeadingSeconds,
+        trimTrailingSeconds,
         windowStartAudioMs,
         windowEndAudioMs,
-        trimTrailingSeconds,
-        previousStableText,
-        commitStartMs: effectiveWindowStartMs,
-        commitEndMs: effectiveWindowEndMs,
+        effectiveWindowStartMs,
+        effectiveWindowEndMs,
         sourceSpeechIntervals,
-      });
-      const aligned = alignment.lines;
-      if (!aligned.length) {
-        // 实时草稿与文件稿差异很大时，不能让一个可用的文件 ASR 窗口反复失败。
-        // 直接以带时间戳的文件稿替换当前未人工编辑的草稿，既保留时间轴，也
-        // 避免会议一直卡在“待稳定校准”。人工编辑行由 store 的保护条件保留。
-        const replacement = await this.replaceWindowWithFileSegments({
-          meetingId,
-          fileResult: result,
-          trimLeadingSeconds,
-          trimTrailingSeconds,
-          windowStartAudioMs,
-          windowEndAudioMs,
-          effectiveWindowStartMs,
-          effectiveWindowEndMs,
-          sourceSpeechIntervals,
-          previousStableText,
-          speakerRows: candidateRows,
-          model,
-          hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
-          abortSignal,
-        });
-        if (!replacement.insertedCount) throw new Error("unable to align corrected transcript to rows");
-        if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_fallback", replacement.insertedCount, replacement.compositionTrace);
-        await this.afterStableCorrection(meetingId, replacement.stableRevision);
-        return {
-          ok: true,
-          updatedCount: 0,
-          insertedCount: replacement.insertedCount,
-          skippedCount: candidateRows.length,
-          lastProcessedTranscriptId: replacement.lastTranscriptId || Number(startTranscriptId || 0),
-          model,
-          submissionMode,
-          sourceLength: correctedText.length,
-          hotwordCount,
-          hotwordChars: hotwordText.length,
-          stableRevision: replacement.stableRevision,
-          alignmentMode: "file_replace_fallback",
-          consistency: "disputed",
-          windowStartAudioMs,
-          windowEndAudioMs,
-          commitEndAudioMs: effectiveWindowEndMs,
-        };
-      }
-
-      throwIfAborted(abortSignal);
-      const diarizationSegments = this.diarizeSpeakerSegments
-        ? await this.diarizeSpeakerSegments({ meetingId, wav, audioPath })
-        : [];
-      // 对齐器可能只覆盖候选行的一部分（例如实时端把一句拆成了多行）。
-      // 只有真正收到文件稿映射的行才能进入 stable；此前把整个 candidateRows
-      // 都标 stable，会把未覆盖的实时残片伪装成定稿，随后与文件稿并排保留，
-      // 造成重复文本和稳定稿评分虚高。
-      const matchedCandidateRows = getMappedCandidateRows(candidateRows, aligned);
-      // 对齐只覆盖了一部分实时草稿时，不能把“已映射部分”更新为 stable、
-      // 其余草稿无限遗留到封存时再全部降级成 fallback。那样同一段时间会同时
-      // 存在文件稿和实时残片，最终拼接必然重复。
-      //
-      // 文件窗口已经成功返回可用结果，因此此时以该窗口的 canonical 文件稿整体
-      // 替换未人工编辑的自动行；人工编辑行仍由 store 的保护条件保留。这比让
-      // 未映射残片在后续窗口/封存阶段不断累积更可预测，也符合“稳定稿优先”的
-      // 单一事实来源约束。
-      if (shouldReplaceWindowForPartialAlignment(candidateRows, aligned)) {
-        const replacement = await this.replaceWindowWithFileSegments({
-          meetingId,
-          fileResult: result,
-          trimLeadingSeconds,
-          trimTrailingSeconds,
-          windowStartAudioMs,
-          windowEndAudioMs,
-          effectiveWindowStartMs,
-          effectiveWindowEndMs,
-          sourceSpeechIntervals,
-          previousStableText,
-          speakerRows: candidateRows,
-          model,
-          hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
-          abortSignal,
-        });
-        if (replacement.insertedCount > 0) {
-          if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_replace_partial_alignment", replacement.insertedCount, replacement.compositionTrace);
-          await this.afterStableCorrection(meetingId, replacement.stableRevision);
-          return {
-            ok: true,
-            updatedCount: 0,
-            insertedCount: replacement.insertedCount,
-            skippedCount: 0,
-            lastProcessedTranscriptId: replacement.lastTranscriptId || Number(startTranscriptId || 0),
-            model,
-            submissionMode,
-            sourceLength: correctedText.length,
-            hotwordCount,
-            hotwordChars: hotwordText.length,
-            stableRevision: replacement.stableRevision,
-            alignmentMode: "file_replace_partial_alignment",
-            consistency: "disputed",
-            windowStartAudioMs,
-            windowEndAudioMs,
-            commitEndAudioMs: effectiveWindowEndMs,
-            unmatchedCandidateCount: Math.max(0, candidateRows.length - matchedCandidateRows.length),
-          };
-        }
-        console.warn(`[rolling-asr] partial alignment replacement produced no canonical segments meeting=${meetingId}; preserving mapped-row fallback`);
-      }
-      const diarizedSpeakers = mapDiarizationSpeakersToRows(matchedCandidateRows, aligned, diarizationSegments, wav.length / (16000 * 2), trimLeadingSeconds);
-
-      throwIfAborted(abortSignal);
-      const applied = await this.store.applyStableCorrection(meetingId, {
-        candidateRows: matchedCandidateRows,
-        aligned,
-        diarizedSpeakers,
-        alignment,
+        previousStableText,
+        speakerRows: candidateRows,
         model,
-        applyGlossary,
-        formatTime,
+        hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+        abortSignal,
       });
-
-      if (windowRunId) await this.store.finalizeWindowRun(windowRunId, alignment.mode, applied.updatedCount, null);
-
-      // 旧链路副作用：快照刷新 + 自动分析调度（由调用方注入，默认空操作）。
-      await this.afterStableCorrection(meetingId, applied.stableRevision);
+      if (!replacement.insertedCount) throw new Error("file transcription produced no canonical stable segments");
+      if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_canonical", replacement.insertedCount, replacement.compositionTrace);
+      await this.afterStableCorrection(meetingId, replacement.stableRevision);
 
       return {
         ok: true,
-        updatedCount: applied.updatedCount,
-        skippedCount: applied.skippedCount,
-        speakerUpdatedCount: applied.speakerUpdatedCount,
-        lastProcessedTranscriptId: Math.max(Number(startTranscriptId || 0), ...candidateRows.map((row) => Number(row.id))),
+        updatedCount: 0,
+        insertedCount: replacement.insertedCount,
+        deletedCount: replacement.deletedCount,
+        skippedCount: 0,
+        lastProcessedTranscriptId: replacement.lastTranscriptId || Number(startTranscriptId || 0),
         model,
         submissionMode,
         sourceLength: correctedText.length,
         hotwordCount,
         hotwordChars: hotwordText.length,
-        stableRevision: applied.stableRevision,
-        alignmentMode: alignment.mode,
-        consistency: alignment.consistency,
-        unmatchedCandidateCount: Math.max(0, candidateRows.length - matchedCandidateRows.length),
+        stableRevision: replacement.stableRevision,
+        alignmentMode: "file_canonical",
         windowStartAudioMs,
         windowEndAudioMs,
         commitEndAudioMs: effectiveWindowEndMs,
+        forcedBoundary,
+        replacedRealtimeRowCount: candidateRows.length,
       };
     } finally {
       // 临时文件清理由调用方或定时任务处理（与现有行为一致）
@@ -427,11 +272,9 @@ export class RollingTranscriptService {
     );
     if (!preview.length) return { insertedCount: 0, deletedCount: 0, lastTranscriptId: 0 };
 
-    // 删除窗口内旧段（通过 store，事务）
-    throwIfAborted(abortSignal);
-    const deletedCount = await this.store.deleteWindowTranscriptRows(meetingId, effectiveWindowStartMs, effectiveWindowEndMs);
-
-    // 插入新的 canonical 段
+    // 同一事务内替换窗口旧自动行并插入新的 canonical 段。
+    // 不可先单独删除再插入：文件段的构成或数据库写入失败时，旧做法会让
+    // 用户在会中看到一段草稿直接消失。
     const inserted = await this.insertFileAsrSegments({
       meetingId,
       fileResult,
@@ -447,20 +290,22 @@ export class RollingTranscriptService {
       model,
       hotwords,
       glossaryEntries,
+      replaceExistingAutoRows: true,
       auditTrace: {},
       abortSignal,
     });
 
     return {
       ...inserted,
-      deletedCount,
+      deletedCount: Number(inserted.deletedCount || 0),
       compositionTrace: {
         version: 1,
         effectiveWindowStartMs: Math.round(Number(effectiveWindowStartMs || 0)),
         effectiveWindowEndMs: Math.round(Number(effectiveWindowEndMs || 0)),
         previewTiming: previewAuditTrace,
         preview: preview.map(summarizeCompositionSegment),
-        deletedCount,
+        deletedCount: Number(inserted.deletedCount || 0),
+        replacementInTransaction: true,
         insertion: inserted.compositionTrace || {},
       },
     };
@@ -484,6 +329,7 @@ export class RollingTranscriptService {
     speakerRows = [],
     model = ROLLING_ASR_MODEL,
     hotwords = [],
+    replaceExistingAutoRows = false,
     auditTrace = {},
     glossaryEntries = [],
     audioPath = "",
@@ -559,7 +405,7 @@ export class RollingTranscriptService {
       };
     }
 
-    const { insertedCount, insertedIds, stableRevision } = await this.store.insertFileAsrStableSegments(meetingId, {
+    const { insertedCount, insertedIds, stableRevision, deletedCount } = await this.store.insertFileAsrStableSegments(meetingId, {
       segments: boundedSegments.map((segment) => ({
         time: formatMeetingElapsedTime(segment.startMs / 1000),
         speaker: segment.speaker || "待识别",
@@ -574,12 +420,14 @@ export class RollingTranscriptService {
       audioPath,
       windowStartMs: commitStartMs,
       windowEndMs: commitEndMs,
+      replaceExistingAutoRows,
     });
 
     return {
       insertedCount,
       insertedIds,
       stableRevision: Number(stableRevision || 0),
+      deletedCount: Number(deletedCount || 0),
       lastTranscriptId: insertedIds[insertedIds.length - 1] || 0,
       compositionTrace: {
         commitStartMs, commitEndMs, timing: auditTrace,

@@ -776,7 +776,7 @@ function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
   }
 }
 
-export async function finalizeMeetingSourceAudio(meetingId, status = "complete", openDb) {
+export async function finalizeMeetingSourceAudio(meetingId, status = "complete", openDb, { force = false } = {}) {
   const key = Number(meetingId || 0);
   const state = meetingSourceAudioWrites.get(key) || ensureMeetingSourceAudio(key);
   try {
@@ -791,8 +791,11 @@ export async function finalizeMeetingSourceAudio(meetingId, status = "complete",
   state.scheduledBytes = bytes;
   updateWavFileHeader(state.audioPath, bytes);
   // 暂停后继续录音时，前一条连接的异步 seal 可能晚于新连接启动。
-  // 这时绝不能把仍在录音的会议写成 complete；新连接会在真正 stop 时收口。
-  const finalStatus = state.failed ? "error" : (_liveConns && _liveConns.has(key) ? "recording" : status);
+  // 这时不能把仍在录音的会议写成 complete；但用户明确点击停止时，当前连接
+  // 仍在表内是正常的，必须以 force 让完整源录音收口。
+  const finalStatus = state.failed
+    ? "error"
+    : (!force && _liveConns && _liveConns.has(key) ? "recording" : status);
   const db = openDb();
   db.prepare(`
     UPDATE meetings
@@ -822,4 +825,3 @@ export function persistMeetingElapsedSeconds(meetingId, seconds, openDb) {
     .run(Math.max(0, Math.floor(Number(seconds || 0))), Number(meetingId || 0));
   db.close();
 }
-

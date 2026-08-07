@@ -217,9 +217,11 @@ test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残�
     listWindowTranscriptRows: async () => rows,
     getPreviousStableText: async () => "",
     deleteWindowTranscriptRows: async (...args) => { calls.deleted.push(args); return 2; },
-    insertFileAsrStableSegments: async (_meetingId, { segments }) => {
+    insertFileAsrStableSegments: async (_meetingId, payload) => {
+      const { segments } = payload;
       calls.inserted.push(segments);
-      return { insertedCount: segments.length, insertedIds: [9901], stableRevision: 19 };
+      calls.replaceExistingAutoRows = payload.replaceExistingAutoRows;
+      return { insertedCount: segments.length, insertedIds: [9901], stableRevision: 19, deletedCount: 2 };
     },
     applyStableCorrection: async () => {
       calls.applied += 1;
@@ -243,17 +245,18 @@ test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残�
     getHotwords: async () => [],
   });
 
-  assert.equal(result.alignmentMode, "file_replace_partial_alignment");
+  assert.equal(result.alignmentMode, "file_canonical");
   assert.equal(result.insertedCount, 1);
-  assert.equal(result.unmatchedCandidateCount, 1);
-  assert.deepEqual(calls.deleted, [[91, 0, 4000]]);
+  assert.equal(result.deletedCount, 2);
+  assert.deepEqual(calls.deleted, [], "替换不能先在 service 层单独删除");
+  assert.equal(calls.replaceExistingAutoRows, true, "adapter 必须在同一事务替换自动行");
   assert.equal(calls.inserted.length, 1);
   assert.equal(calls.inserted[0][0].text, "文件稿覆盖的第一句");
   assert.equal(calls.inserted[0][0].speaker, "说话人 1", "整体替换不得把已有说话人轨道退化为待识别");
   assert.equal(calls.inserted[0][0].speakerSource, "rolling_realtime_hint");
   assert.equal(calls.applied, 0);
   assert.deepEqual(calls.notifications, [{ meetingId: 91, stableRevision: 19 }]);
-  assert.equal(calls.finalized[0][1], "file_replace_partial_alignment");
+  assert.equal(calls.finalized[0][1], "file_canonical");
 });
 
 test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿", async () => {
@@ -399,7 +402,9 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
     persistMeetingElapsedSeconds: () => {},
     checkpointMeetingSourceAudio: async () => {},
     markMeetingSourceAudioStabilizing: async () => {},
-    finalizeMeetingSourceAudio: async () => { events.push("source-finalized"); },
+    finalizeMeetingSourceAudio: async (_meetingId, status, options) => {
+      events.push(`source-finalized:${status}:${Boolean(options?.force)}`);
+    },
     reconcileMeetingSpeakersFromSourceAudio: async () => ({ ok: true }),
     getAsrHotwordsForMeeting: () => [],
     getMeetingGlossaryEntries: () => [],
@@ -487,5 +492,6 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
   assert.ok(correctionAbortSignals[1] instanceof AbortSignal, "会中已启动窗口递归出的尾窗必须继承封存 deadline");
   assert.equal(forceCalls, 1, "所有尾窗排空后才能用实时稿兜底");
   assert.ok(events.indexOf("force-realtime-fallback") > events.lastIndexOf(`file-window-${correctionCalls}`));
+  assert.ok(events.includes("source-finalized:complete:true"), "用户主动结束必须强制封存完整源录音");
   sealingClient.handlers.get("close")();
 });
