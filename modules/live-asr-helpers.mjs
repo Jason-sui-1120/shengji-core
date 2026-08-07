@@ -751,7 +751,8 @@ export function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
   const total = Math.max(0, Number(durationMs || 0));
   if (!total) return;
   const rows = db.prepare(`
-    SELECT id, audio_start_ms AS audioStartMs, audio_end_ms AS audioEndMs,
+    SELECT id, text, raw_text AS rawText, correction_text AS correctionText,
+      audio_start_ms AS audioStartMs, audio_end_ms AS audioEndMs,
       audio_duration_ms AS audioDurationMs, user_edited AS userEdited
     FROM transcripts
     WHERE meeting_id = ? AND deleted_at IS NULL
@@ -759,8 +760,14 @@ export function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
   `).all(Number(meetingId || 0));
   if (!rows.length) return;
   const update = db.prepare("UPDATE transcripts SET audio_start_ms = ?, audio_end_ms = ? WHERE id = ? AND meeting_id = ? AND deleted_at IS NULL");
+  const mergeTail = db.prepare(`
+    UPDATE transcripts
+    SET text = ?, raw_text = ?, correction_text = ?
+    WHERE id = ? AND meeting_id = ? AND deleted_at IS NULL AND user_edited = 0
+  `);
   const discard = db.prepare("UPDATE transcripts SET deleted_at = ? WHERE id = ? AND meeting_id = ? AND deleted_at IS NULL AND user_edited = 0");
   let cursor = 0;
+  let lastPlayableAuto = null;
   for (const row of rows) {
     const originalStart = Number(row.audioStartMs || 0);
     const originalEnd = Number(row.audioEndMs || 0);
@@ -768,10 +775,22 @@ export function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
     let start = Math.min(total, Math.max(cursor, Math.max(0, Number.isFinite(originalStart) ? originalStart : 0)));
     // 封存时文件 ASR 可能仍带有略超出录音尾部的时间戳。此前 start 被钳到
     // total 后又继续保留，最终落成 start === end 的“幽灵行”：文字存在，但
-    // 回放永远无法定位。自动生成行应直接丢弃；人工编辑绝不能删除，改锚定到
-    // 最后一个可播放的小区间，由后续人工编辑继续决定其精确位置。
+    // 回放永远无法定位。文件模型偶尔会把最后一句的尾巴标在音频终点之外；
+    // 若前一条自动稳定稿已经到达终点，合并文字到该行以保留内容且不制造重叠。
+    // 不能安全合并的自动行才丢弃；人工编辑绝不能删除，改锚定到最后一个可播放
+    // 的小区间，由后续人工编辑继续决定其精确位置。
     if (start >= total) {
       if (!row.userEdited) {
+        if (lastPlayableAuto && lastPlayableAuto.audioEndMs >= total) {
+          const append = (base, tail) => `${String(base || "").trim()}${String(tail || "").trim()}`;
+          const mergedText = append(lastPlayableAuto.text, row.text);
+          const mergedRawText = append(lastPlayableAuto.rawText, row.rawText || row.text);
+          const mergedCorrectionText = append(lastPlayableAuto.correctionText, row.correctionText || row.text);
+          mergeTail.run(mergedText, mergedRawText, mergedCorrectionText, lastPlayableAuto.id, Number(meetingId || 0));
+          lastPlayableAuto.text = mergedText;
+          lastPlayableAuto.rawText = mergedRawText;
+          lastPlayableAuto.correctionText = mergedCorrectionText;
+        }
         discard.run(new Date().toISOString(), row.id, Number(meetingId || 0));
         continue;
       }
@@ -790,6 +809,13 @@ export function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
     }
     if (start !== originalStart || end !== originalEnd) update.run(start, end, row.id, Number(meetingId || 0));
     cursor = end;
+    if (!row.userEdited) {
+      lastPlayableAuto = {
+        ...row,
+        audioStartMs: start,
+        audioEndMs: end,
+      };
+    }
   }
 }
 

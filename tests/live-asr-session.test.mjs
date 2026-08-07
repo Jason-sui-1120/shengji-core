@@ -29,17 +29,25 @@ test("文件段触及中心区右边界时不得生成零时长稳定稿", () =>
   ]);
 });
 
-test("封存时超出源音频终点的自动稳定稿必须删除，不能留下零时长行", () => {
+test("封存时超出源音频终点的自动稳定稿合并到前一条尾部，不能留下零时长行或丢字", () => {
   const rows = [
-    { id: 1, audioStartMs: 590_000, audioEndMs: 600_000, audioDurationMs: 10_000, userEdited: 0 },
-    { id: 2, audioStartMs: 600_000, audioEndMs: 600_000, audioDurationMs: 2_000, userEdited: 0 },
+    {
+      id: 1, text: "最后一条稳定稿", rawText: "最后一条原始稿", correctionText: "最后一条校正稿",
+      audioStartMs: 590_000, audioEndMs: 600_000, audioDurationMs: 10_000, userEdited: 0,
+    },
+    {
+      id: 2, text: "尾部未落轴文字", rawText: "尾部原始文字", correctionText: "尾部校正文字",
+      audioStartMs: 600_000, audioEndMs: 600_000, audioDurationMs: 2_000, userEdited: 0,
+    },
   ];
   const updated = [];
+  const merged = [];
   const discarded = [];
   const db = {
     prepare(sql) {
-      if (sql.includes("SELECT id, audio_start_ms")) return { all: () => rows };
+      if (sql.includes("SELECT id, text, raw_text")) return { all: () => rows };
       if (sql.includes("SET audio_start_ms")) return { run: (...values) => updated.push(values) };
+      if (sql.includes("SET text = ?")) return { run: (...values) => merged.push(values) };
       if (sql.includes("SET deleted_at")) return { run: (...values) => discarded.push(values) };
       throw new Error(`unexpected SQL: ${sql}`);
     },
@@ -48,6 +56,7 @@ test("封存时超出源音频终点的自动稳定稿必须删除，不能留�
   clampMeetingTranscriptTimeline(db, 7, 600_000);
 
   assert.deepEqual(updated, []);
+  assert.deepEqual(merged, [["最后一条稳定稿尾部未落轴文字", "最后一条原始稿尾部原始文字", "最后一条校正稿尾部校正文字", 1, 7]]);
   assert.equal(discarded.length, 1);
   assert.equal(discarded[0][1], 2);
   assert.equal(discarded[0][2], 7);
