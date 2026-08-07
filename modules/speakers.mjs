@@ -10,7 +10,7 @@ import {
 import { normalizeVector, cosineSimilarity, mergeEmbeddingVector, matchEmbeddingProfile, safeParseJson } from "./speaker-utils.mjs";
 import { hasAiAccess, getSpeakerAudioUrl, normalizeDiarizationTime, normalizeConfidence } from "./speaker-core.mjs";
 import { extractVoiceFeatures, getFeatureDistance, mergeVoiceFeatures } from "./voice-features.mjs";
-import { normalizeSpeakerKey, normalizeTranscriptSegment } from "./text-utils.mjs";
+import { normalizeTranscriptSegment } from "./text-utils.mjs";
 import { getWavDurationSeconds } from "./audio-utils.mjs";
 import { callSpeakerEmbedding, callSpeakerDiarization } from "./speaker-gateway.mjs";
 import {
@@ -60,13 +60,40 @@ export function normalizeDiarizationSegments(payload, meetingId, audioDurationSe
   ].find((value) => Array.isArray(value));
 
   if (!Array.isArray(rawSegments) || !rawSegments.length) return [];
+  // CampPlus 等分离模型常使用 `speaker_0`/`speaker_1` 的 0 基标签。
+  // 不能逐条直接调用 normalizeSpeakerKey：那会把 0 和 1 都归成“说话人 1”。
+  // 先在本次模型结果内建立一致的临时轨道映射，保证一个窗口内至少能正确展示
+  // “说话人 1/2/3”；跨窗口一致性再由声纹/重叠轨道丰富任务收敛。
+  const rawLabels = rawSegments.map((segment) => String(
+    segment.speaker ?? segment.speaker_id ?? segment.spk ?? segment.label ?? segment.user ?? "",
+  ).trim());
+  const numericLabels = rawLabels
+    .map((label) => label.match(/(\d+)/)?.[1])
+    .filter((value) => value != null)
+    .map(Number);
+  const zeroBasedLabels = numericLabels.includes(0);
+  const speakerByRawLabel = new Map();
+  let nextFallbackLabel = 1;
+  const labelFor = (rawLabel) => {
+    const key = rawLabel || "__default__";
+    if (speakerByRawLabel.has(key)) return speakerByRawLabel.get(key);
+    const numeric = key.match(/(\d+)/)?.[1];
+    const index = numeric == null
+      ? nextFallbackLabel
+      : Math.max(1, Number(numeric) + (zeroBasedLabels ? 1 : 0));
+    nextFallbackLabel = Math.max(nextFallbackLabel, index + 1);
+    const label = `说话人 ${index}`;
+    speakerByRawLabel.set(key, label);
+    return label;
+  };
+
   const normalized = rawSegments
-    .map((segment) => {
-      const rawSpeaker = segment.speaker ?? segment.speaker_id ?? segment.spk ?? segment.label ?? segment.user;
+    .map((segment, index) => {
+      const rawSpeaker = rawLabels[index];
       const start = normalizeDiarizationTime(segment.start ?? segment.begin ?? segment.start_time ?? segment.startTime ?? segment.from ?? 0);
       const end = normalizeDiarizationTime(segment.end ?? segment.stop ?? segment.end_time ?? segment.endTime ?? segment.to ?? start);
       return {
-        speaker: normalizeSpeakerKey(rawSpeaker ?? "1", meetingId),
+        speaker: labelFor(rawSpeaker),
         start: Math.max(0, start),
         end: Math.max(0, end),
         text: normalizeTranscriptSegment(segment.text || ""),

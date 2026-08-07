@@ -15,6 +15,10 @@ import { getAbsoluteFileSegments, getCharOverlapRatio, summarizeCompositionSegme
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
 import { extractStableWindowText } from "./transcript-align.mjs";
 import {
+  assignSpeakersByAbsoluteOverlap,
+  buildAbsoluteSpeakerSegments,
+} from "./speaker-timeline.mjs";
+import {
   AIT_PUBLIC_BASE_URL, ROLLING_ASR_TIMEOUT_MS, ROLLING_ASR_URL_TIMEOUT_MS,
   ROLLING_ASR_MODEL, ROLLING_ASR_MIN_WINDOW_OVERLAP_RATIO,
 } from "./config.mjs";
@@ -56,9 +60,12 @@ export class RollingTranscriptService {
   constructor(store, aiCalls = {}) {
     this.store = store;
     // AI 调用注入（callFileTranscription/callFileTranscriptionByUrl）。
-    // 说话人轨道由独立的声纹丰富任务处理，不再决定稳定文本落库路径。
+    // 说话人分离只在稳定稿落库后异步回填，绝不阻塞文件稿成为稳定文本。
     this.callFileTranscription = aiCalls.callFileTranscription;
     this.callFileTranscriptionByUrl = aiCalls.callFileTranscriptionByUrl;
+    this.diarizeSpeakerSegments = typeof aiCalls.diarizeSpeakerSegments === "function"
+      ? aiCalls.diarizeSpeakerSegments
+      : null;
     // 旧链路副作用注入（快照刷新/自动分析调度），切换生产时由调用方提供。
     // 默认空操作（不阻塞服务自身逻辑，也不强依赖 index.mjs）。
     this.afterStableCorrection = typeof aiCalls.afterStableCorrection === "function"
@@ -202,11 +209,26 @@ export class RollingTranscriptService {
         speakerRows: candidateRows,
         model,
         hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
+        audioPath,
         abortSignal,
       });
       if (!replacement.insertedCount) throw new Error("file transcription produced no canonical stable segments");
       if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_canonical", replacement.insertedCount, replacement.compositionTrace);
       await this.afterStableCorrection(meetingId, replacement.stableRevision);
+
+      // 说话人分离是增强项，不得卡住文本稳定化、窗口提交或会议结束。
+      // 每个成功的窗口只对刚插入的稳定行回填；失败则保留“待识别”，等待后续窗口/会后归集。
+      void this.enrichStableWindowSpeakers({
+        meetingId,
+        wav,
+        audioPath,
+        insertedRows: replacement.insertedRows,
+        windowStartAudioMs,
+        centerStartAudioMs: effectiveWindowStartMs,
+        centerEndAudioMs: effectiveWindowEndMs,
+      }).catch((error) => {
+        console.warn(`[rolling-speaker] skipped meeting=${Number(meetingId)}: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
       return {
         ok: true,
@@ -252,6 +274,7 @@ export class RollingTranscriptService {
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     glossaryEntries = [],
+    audioPath = "",
     abortSignal = null,
   }) {
     throwIfAborted(abortSignal);
@@ -435,6 +458,79 @@ export class RollingTranscriptService {
         canonical: segments.map(summarizeCompositionSegment),
         inserted: [],
       },
+      insertedRows: boundedSegments.map((segment, index) => ({
+        id: Number(insertedIds[index] || 0),
+        speaker: segment.speaker || "待识别",
+        speakerSource: segment.speakerSource || "file_asr",
+        audioStartMs: Number(segment.startMs || 0),
+        audioEndMs: Number(segment.endMs || 0),
+        userEdited: 0,
+      })).filter((row) => row.id > 0),
+    };
+  }
+
+  /**
+   * 对已落库的稳定窗口做轻量说话人回填。
+   * 不创建新画像、不做跨窗猜测：分离模型给出的会议内轨道直接写为“说话人 N”；
+   * 只有具备至少 200ms 时间重叠的行才更新，人工编辑永远由 store 保护。
+   */
+  async enrichStableWindowSpeakers({
+    meetingId,
+    wav,
+    audioPath,
+    insertedRows,
+    windowStartAudioMs,
+    centerStartAudioMs,
+    centerEndAudioMs,
+  }) {
+    if (!this.diarizeSpeakerSegments || !Array.isArray(insertedRows) || !insertedRows.length || !wav?.length) {
+      return { ok: false, reason: "speaker_enrichment_unavailable" };
+    }
+    const diarizationSegments = await this.diarizeSpeakerSegments({
+      meetingId,
+      wav,
+      audioPath,
+      timeoutMs: 20_000,
+    });
+    if (!Array.isArray(diarizationSegments) || !diarizationSegments.length) {
+      return { ok: false, reason: "diarization_empty" };
+    }
+    const absoluteSegments = buildAbsoluteSpeakerSegments(diarizationSegments, {
+      windowStartMs: windowStartAudioMs,
+      centerStartMs: centerStartAudioMs,
+      centerEndMs: centerEndAudioMs,
+    });
+    if (!absoluteSegments.length) return { ok: false, reason: "diarization_outside_commit_window" };
+
+    const speakerByWindowLabel = new Map();
+    for (const segment of absoluteSegments) {
+      const speaker = String(segment.speaker || "").trim();
+      if (!speaker || speaker === "待识别") continue;
+      const confidence = Number(segment.confidence || 70);
+      const current = speakerByWindowLabel.get(speaker);
+      if (!current || confidence > current.confidence) speakerByWindowLabel.set(speaker, { speaker, confidence });
+    }
+    const matches = assignSpeakersByAbsoluteOverlap(insertedRows, absoluteSegments, speakerByWindowLabel);
+    const assignments = matches.map(({ row, winner }) => ({
+      id: Number(row.id),
+      speaker: winner.speaker,
+      confidence: Number(winner.confidence || 70),
+    })).filter((item) => item.id > 0 && item.speaker && item.speaker !== "待识别");
+    if (!assignments.length) return { ok: false, reason: "no_row_overlap" };
+
+    const applied = await this.store.applySpeakerEnrichment(meetingId, {
+      transcriptIds: insertedRows.map((row) => Number(row.id)).filter((id) => id > 0),
+      assignments,
+      splitPlans: [],
+    });
+    if (Number(applied?.updatedCount || 0) > 0) {
+      await this.afterStableCorrection(meetingId, Number(applied.stableRevision || 0));
+    }
+    return {
+      ok: true,
+      speakerCount: new Set(assignments.map((item) => item.speaker)).size,
+      updatedCount: Number(applied?.updatedCount || 0),
+      stableRevision: Number(applied?.stableRevision || 0),
     };
   }
 }

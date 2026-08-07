@@ -183,3 +183,53 @@ test("稳定文件稿替换：删除旧自动行与写入 canonical 段必须交
   assert.equal(result.deletedCount, 3);
   assert.equal(result.compositionTrace.replacementInTransaction, true);
 });
+
+test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已识别的说话人", async () => {
+  const enrichmentCalls = [];
+  const stableRevisions = [];
+  const service = new RollingTranscriptService({
+    async applySpeakerEnrichment(meetingId, payload) {
+      enrichmentCalls.push({ meetingId, payload });
+      return { updatedCount: 2, stableRevision: 19 };
+    },
+  }, {
+    // CampPlus 返回的是本次窗口内相对时间，服务必须换算回会议绝对时间后再写回。
+    async diarizeSpeakerSegments() {
+      return [
+        { speaker: "说话人 1", start: 8, end: 10, confidence: 88 },
+        { speaker: "说话人 2", start: 10, end: 12, confidence: 91 },
+      ];
+    },
+    async afterStableCorrection(meetingId, stableRevision) {
+      stableRevisions.push({ meetingId, stableRevision });
+    },
+  });
+
+  const result = await service.enrichStableWindowSpeakers({
+    meetingId: 77,
+    wav: Buffer.from([1, 2, 3]),
+    audioPath: "/tmp/meeting-77-window.wav",
+    windowStartAudioMs: 45_000,
+    centerStartAudioMs: 53_000,
+    centerEndAudioMs: 57_000,
+    insertedRows: [
+      { id: 501, speaker: "待识别", speakerSource: "file_asr", audioStartMs: 53_000, audioEndMs: 55_000, userEdited: 0 },
+      { id: 502, speaker: "待识别", speakerSource: "file_asr", audioStartMs: 55_000, audioEndMs: 57_000, userEdited: 0 },
+    ],
+  });
+
+  assert.deepEqual(result, { ok: true, speakerCount: 2, updatedCount: 2, stableRevision: 19 });
+  assert.equal(enrichmentCalls.length, 1);
+  assert.deepEqual(enrichmentCalls[0], {
+    meetingId: 77,
+    payload: {
+      transcriptIds: [501, 502],
+      assignments: [
+        { id: 501, speaker: "说话人 1", confidence: 88 },
+        { id: 502, speaker: "说话人 2", confidence: 91 },
+      ],
+      splitPlans: [],
+    },
+  });
+  assert.deepEqual(stableRevisions, [{ meetingId: 77, stableRevision: 19 }]);
+});

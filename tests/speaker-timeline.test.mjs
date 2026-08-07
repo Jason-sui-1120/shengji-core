@@ -1,9 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import { existsSync } from "node:fs";
+
+// 这份测试同时复制到两端的 server/ 目录运行；core 自身模块在 ../modules/。
+const moduleUrl = existsSync(new URL("../modules/speaker-timeline.mjs", import.meta.url))
+  ? new URL("../modules/speaker-timeline.mjs", import.meta.url)
+  : new URL("./speaker-timeline.mjs", import.meta.url);
+const {
   assignSpeakersByAbsoluteOverlap,
   buildAbsoluteSpeakerSegments,
-} from "./speaker-timeline.mjs";
+} = await import(moduleUrl);
+const speakersModuleUrl = existsSync(new URL("../modules/speakers.mjs", import.meta.url))
+  ? new URL("../modules/speakers.mjs", import.meta.url)
+  : new URL("./speakers.mjs", import.meta.url);
+const { normalizeDiarizationSegments } = await import(speakersModuleUrl);
+
+test("0 基分离标签不能把 speaker_0 与 speaker_1 合并成同一人", () => {
+  const result = normalizeDiarizationSegments({
+    segments: [
+      { speaker: "speaker_0", start: 0, end: 2 },
+      { speaker: "speaker_1", start: 2, end: 4 },
+      { speaker: "speaker_0", start: 4, end: 6 },
+    ],
+  }, 77, 6);
+  assert.deepEqual(result.map((segment) => segment.speaker), ["说话人 1", "说话人 2", "说话人 1"]);
+});
 
 test("窗口相对时间按请求起点换算为会议绝对时间", () => {
   const result = buildAbsoluteSpeakerSegments([

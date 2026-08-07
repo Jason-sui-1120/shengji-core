@@ -8,7 +8,7 @@ import { test } from "node:test";
 const moduleUrl = existsSync(new URL("../modules/live-asr-session.mjs", import.meta.url))
   ? new URL("../modules/live-asr-session.mjs", import.meta.url)
   : new URL("./live-asr-session.mjs", import.meta.url);
-const { createLiveAsrSession, getUpstreamReconnectPlan } = await import(moduleUrl);
+const { createLiveAsrSession, getUpstreamReconnectPlan, shouldSuppressLiveTranscriptDuplicate } = await import(moduleUrl);
 const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-service.mjs", import.meta.url))
   ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
   : new URL("./rolling-transcript-service.mjs", import.meta.url);
@@ -81,6 +81,23 @@ test("封存时超出源音频终点的自动稳定稿合并到前一条尾部�
   assert.equal(rotated.delay, 35_000);
   assert.equal(ordinary.delay, 800);
 }
+
+test("流式累计 SentenceEnd 与 partial-progress 重叠时只保留一条草稿", () => {
+  assert.equal(shouldSuppressLiveTranscriptDuplicate(
+    { text: "我换你换你，这几个这几个团队没定这个", audioStartMs: 11_000, audioEndMs: 18_000, reason: "partial_progress" },
+    { text: "我换你换你，这几个这几个团队没定", audioStartMs: 18_000, audioEndMs: 19_000, reason: "sentence_end" },
+  ), true, "partial-progress 后的近似 SentenceEnd 不能再插一条");
+
+  assert.equal(shouldSuppressLiveTranscriptDuplicate(
+    { text: "这是一条完整的确认句。", audioStartMs: 10_000, audioEndMs: 12_000, reason: "sentence_end" },
+    { text: "这是一条完整的确认句", audioStartMs: 12_300, audioEndMs: 13_000, reason: "sentence_end" },
+  ), true, "相邻重发的 SentenceEnd 不能重复落库");
+
+  assert.equal(shouldSuppressLiveTranscriptDuplicate(
+    { text: "我们本周继续推进项目。", audioStartMs: 10_000, audioEndMs: 12_000, reason: "sentence_end" },
+    { text: "我们本周重新评估预算。", audioStartMs: 12_300, audioEndMs: 14_000, reason: "sentence_end" },
+  ), false, "相邻但内容不同的真实发言必须保留");
+});
 
 class FakeSocket {
   static OPEN = 1;

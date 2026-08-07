@@ -40,6 +40,49 @@ export function getUpstreamReconnectPlan(reason = "upstream closed", attempt = 1
   };
 }
 
+/**
+ * 流式 ASR 在一句话尚未结束时，可能先以 partial-progress 落一段前缀，
+ * 随后又把几乎相同的 SentenceEnd 作为完整结果发回来；少数上游任务还会
+ * 重发相邻的 SentenceEnd。这里仅压制“同一段的近似重发”，绝不按文字全局
+ * 去重，避免删掉真实的重复发言。
+ */
+export function shouldSuppressLiveTranscriptDuplicate(previous, current, options = {}) {
+  if (!previous?.text || !current?.text) return false;
+  const compact = (value) => String(value || "").replace(/[\s，,。！？!?；;：:、]/g, "");
+  const previousText = compact(previous.text);
+  const currentText = compact(current.text);
+  if (!previousText || !currentText) return false;
+
+  const shorter = previousText.length <= currentText.length ? previousText : currentText;
+  const longer = previousText.length <= currentText.length ? currentText : previousText;
+  const sharedPrefix = (() => {
+    let index = 0;
+    while (index < shorter.length && shorter[index] === longer[index]) index += 1;
+    return index;
+  })();
+  // 至少 8 个字、且覆盖短文本 80%，同时只允许很小的尾部差异。
+  const closeText = shorter.length >= 8
+    && sharedPrefix >= 8
+    && sharedPrefix / shorter.length >= 0.8
+    && longer.length - shorter.length <= Math.max(4, Math.ceil(longer.length * 0.25));
+  if (!closeText) return false;
+
+  const previousStart = Number(previous.audioStartMs || 0);
+  const previousEnd = Number(previous.audioEndMs || previousStart);
+  const currentStart = Number(current.audioStartMs || 0);
+  const currentEnd = Number(current.audioEndMs || currentStart);
+  const overlapMs = Math.max(0, Math.min(previousEnd, currentEnd) - Math.max(previousStart, currentStart));
+  const shorterDuration = Math.min(Math.max(0, previousEnd - previousStart), Math.max(0, currentEnd - currentStart));
+  const overlapRatio = shorterDuration > 0 ? overlapMs / shorterDuration : 0;
+  const gapMs = Math.max(0, currentStart - previousEnd, previousStart - currentEnd);
+
+  // partial-progress 的时间端点来自本地时钟，SentenceEnd 的端点来自上游；
+  // 二者可相差一个短句时长。只在前一个确为 partial-progress 时放宽到 10 秒。
+  const ordinaryDuplicate = overlapRatio > 0.8 || gapMs <= 1_500;
+  const progressFinalDuplicate = previous.reason === "partial_progress" && gapMs <= 10_000;
+  return ordinaryDuplicate || progressFinalDuplicate || options.force === true;
+}
+
 export async function createLiveAsrSession(client, clientUrl, deps) {
   // 这个模块同时运行在 SQLite 公网端和 MySQL 公司端，不能再隐式读取宿主
   // index.mjs 的全局变量。所有 Node 运行时对象和端侧状态都必须显式注入。
@@ -223,7 +266,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   // latestPartial 落库，若不加抑制会把同一句话的快照反复落库（前缀累积重复行）。
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
-  let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs }——去重要区间重叠+文本双条件
+  let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs, reason }——仅压制上游的近似重发
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   // P0：真实语音 PCM 字节数（自适应 VAD 后）——asr_no_first_result 定时器只在有真实语音时启动
@@ -1605,30 +1648,17 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
     const timelineLineDrafts = await Promise.resolve(deps.normalizeTranscriptDraftTimeline(meetingId, lineDrafts, quality));
 
-    // 内容相似去重：ASR 上游偶尔重复发送完全相同的 SentenceEnd。
-    // 双条件：两个音频区间重叠比例 >80% + 文本近似（前缀匹配且长度差 <5%）。
-    // 反例 1：真正重复 [10s,14s] 又来一次 [10s,14s]——重叠 100%，去重。
-    // 反例 2：两人紧接着说"好的" [10s,11s]、[11.2s,12s]——重叠 0%，不去重。
+    // 上游可能重发相邻 SentenceEnd，也可能把 partial-progress 的前缀再作为
+    // SentenceEnd 发送。二者都只能保留一条草稿；45 秒文件稿会继续覆盖它。
     const lastFlushed = lastFlushedTranscript;
-    if (lastFlushed && correctedText) {
-      const shorter = correctedText.length < lastFlushed.text.length ? correctedText : lastFlushed.text;
-      const longer = correctedText.length < lastFlushed.text.length ? lastFlushed.text : correctedText;
-      const textSimilar = longer.startsWith(shorter)
-        && (longer.length - shorter.length) / longer.length < 0.05;
-      // 区间重叠比例：交集长度 / 较短区间长度
-      const lastStart = Number(lastFlushed.audioStartMs || 0);
-      const lastEnd = Number(lastFlushed.audioEndMs || 0);
-      const curStart = Number(audioStartMs || 0);
-      const curEnd = Number(audioEndMs || 0);
-      const overlapStart = Math.max(lastStart, curStart);
-      const overlapEnd = Math.min(lastEnd, curEnd);
-      const overlapMs = Math.max(0, overlapEnd - overlapStart);
-      const shorterDuration = Math.min(lastEnd - lastStart, curEnd - curStart);
-      const overlapRatio = shorterDuration > 0 ? overlapMs / shorterDuration : 0;
-      if (textSimilar && overlapRatio > 0.8) {
-        console.log(`[transcript] dedupe skip meeting=${meetingId}: overlap=${(overlapRatio * 100).toFixed(0)}% with previous flush`);
-        return null;
-      }
+    if (lastFlushed && correctedText && shouldSuppressLiveTranscriptDuplicate(lastFlushed, {
+      text: correctedText,
+      audioStartMs,
+      audioEndMs,
+      reason,
+    })) {
+      console.log(`[transcript] dedupe skip meeting=${meetingId}: reason=${reason} previous=${lastFlushed.reason || "unknown"}`);
+      return null;
     }
 
     const correctionApplied = deps.normalizeTranscriptSegment(correctedText) !== deps.normalizeTranscriptSegment(text);
@@ -1649,7 +1679,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           hotwords,
         }));
       }
-      lastFlushedTranscript = { text: correctedText, audioStartMs, audioEndMs };
+      lastFlushedTranscript = { text: correctedText, audioStartMs, audioEndMs, reason };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[transcript] insert failed meeting=${meetingId}: ${message}`);
