@@ -58,12 +58,25 @@ export function getMeetingGlossaryEntries(db, meetingId) {
   return entries;
 }
 
-export function getAsrHotwordsForMeeting(db, meetingId) {
+export function getAsrHotwordsForMeeting(db, meetingId, limits = {}) {
   const entries = getMeetingGlossaryEntries(db, meetingId)
     .filter((entry) => entry.enabled && entry.term)
     .sort((a, b) => glossaryScopePriority(b.scope) - glossaryScopePriority(a.scope)
       || Number(b.weight || 0) - Number(a.weight || 0)
       || Number(b.id || 0) - Number(a.id || 0));
+  return selectAsrHotwords(entries, limits);
+}
+
+/**
+ * 按已经排好优先级的词库条目生成 ASR 热词。
+ *
+ * 流式 ASR、45 秒文件 ASR 和尾段补跑必须使用同一份有界列表：否则文件
+ * 校准会把所有别名无限制传给模型，既可能超过供应商的 100 个上限，也会
+ * 稀释项目高权重术语。上层只负责提供端侧配置，排序和截断在 core 保持一致。
+ */
+export function selectAsrHotwords(entries, { maxCount = 80, maxChars = 400 } = {}) {
+  const safeMaxCount = Math.max(1, Number(maxCount) || 80);
+  const safeMaxChars = Math.max(1, Number(maxChars) || 400);
   const selected = [];
   const seen = new Set();
   let charCount = 0;
@@ -71,12 +84,12 @@ export function getAsrHotwordsForMeeting(db, meetingId) {
     const term = String(value || "").trim();
     const key = normalizeGlossaryTerm(term);
     const nextLength = charCount + (selected.length ? 1 : 0) + term.length;
-    if (!term || seen.has(key) || nextLength > 700) return;
+    if (!term || seen.has(key) || selected.length >= safeMaxCount || nextLength > safeMaxChars) return;
     seen.add(key);
     selected.push(term);
     charCount = nextLength;
   };
-  for (const entry of entries) {
+  for (const entry of entries || []) {
     append(entry.term);
     for (const alias of entry.aliases || []) append(alias);
   }

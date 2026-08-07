@@ -1583,13 +1583,24 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     let hotwords = [];
     let glossaryEntries = [];
     try {
-      // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
-      glossaryEntries = await withTimeout(
-        Promise.resolve(deps.getMeetingGlossaryEntries(meetingId)),
+      // 草稿元数据必须复用实际送往流式/文件 ASR 的有界热词列表。此前这里
+      // 从原始词库再次展开别名，导致界面记录与模型实际输入不一致。
+      hotwords = await withTimeout(
+        Promise.resolve(deps.getAsrHotwordsForMeeting(meetingId)),
         config.ASR_GLOSSARY_TIMEOUT_MS,
         "glossary_lookup",
       );
-      hotwords = deps.uniqueStrings(glossaryEntries.flatMap((entry) => [entry.term, ...(entry.aliases || [])]).filter(Boolean)).slice(0, 100);
+      hotwords = Array.isArray(hotwords) ? hotwords : [];
+    } catch { /* 词库不可用时保留原文 */ }
+    try {
+      // 别名替换仍需要完整的词库条目；它不参与 ASR 请求预算，也不能影响
+      // 上面已取得的有界热词列表。
+      glossaryEntries = await withTimeout(
+        Promise.resolve(deps.getMeetingGlossaryEntries(meetingId)),
+        config.ASR_GLOSSARY_TIMEOUT_MS,
+        "glossary_alias_lookup",
+      );
+      glossaryEntries = Array.isArray(glossaryEntries) ? glossaryEntries : [];
     } catch { /* 词库不可用时保留原文 */ }
     if (usingPartialFallback) {
       lastPartialFlushText = text;
