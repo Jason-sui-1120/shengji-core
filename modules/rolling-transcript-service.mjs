@@ -32,6 +32,27 @@ function throwIfAborted(abortSignal) {
 }
 
 /**
+ * 将文件 ASR 片段严格裁到本窗口的中心提交区间。
+ *
+ * 时间所有权采用左闭右开区间 [start, end)：右边界上的片段属于下一窗口，
+ * 绝不能以 0ms 的形式落库。这个防线保留在共享 core，而不是仅依赖 SQLite/MySQL
+ * adapter，保证两个端的稳定稿时间轴语义一致。
+ */
+export function boundSegmentsToCommitWindow(segments, { commitStartMs = 0, commitEndMs = 0 } = {}) {
+  const lowerBound = Math.max(0, Math.round(Number(commitStartMs || 0)));
+  const upperBound = Math.max(lowerBound + 1, Math.round(Number(commitEndMs || lowerBound + 1)));
+  return (Array.isArray(segments) ? segments : [])
+    .map((segment) => {
+      const rawStartMs = Math.round(Number(segment?.startMs || 0));
+      const rawEndMs = Math.max(rawStartMs + 1, Math.round(Number(segment?.endMs || 0)));
+      const startMs = Math.max(lowerBound, rawStartMs);
+      const endMs = Math.min(upperBound, rawEndMs);
+      return { ...segment, startMs, endMs };
+    })
+    .filter((segment) => String(segment?.text || "").trim() && segment.endMs > segment.startMs);
+}
+
+/**
  * RollingTranscriptService：滚动 ASR 稳定稿校正服务。
  * 依赖注入 RollingStore（SQLite/MySQL 各自实现）+ AI 调用函数（callFileTranscription 等），
  * 业务逻辑两端共用。AI 调用通过构造函数注入，不直接 import（保持服务独立）。
@@ -522,14 +543,30 @@ export class RollingTranscriptService {
 
     // DB 插入通过 store（含重叠保护 + 事务）
     throwIfAborted(abortSignal);
+    const boundedSegments = boundSegmentsToCommitWindow(segments, { commitStartMs, commitEndMs });
+    if (!boundedSegments.length) {
+      return {
+        insertedCount: 0,
+        insertedIds: [],
+        stableRevision: 0,
+        lastTranscriptId: 0,
+        compositionTrace: {
+          commitStartMs, commitEndMs, timing: auditTrace,
+          candidates: candidateSegments.map(summarizeCompositionSegment),
+          canonical: segments.map(summarizeCompositionSegment),
+          inserted: [],
+        },
+      };
+    }
+
     const { insertedCount, insertedIds, stableRevision } = await this.store.insertFileAsrStableSegments(meetingId, {
-      segments: segments.map((segment) => ({
+      segments: boundedSegments.map((segment) => ({
         time: formatMeetingElapsedTime(segment.startMs / 1000),
         speaker: segment.speaker || "待识别",
         text: segment.text,
         speakerSource: segment.speakerSource || "file_asr",
-        startMs: Math.max(commitStartMs, Math.round(segment.startMs)),
-        endMs: Math.min(commitEndMs, Math.max(Math.round(segment.endMs), Math.round(segment.startMs) + 1)),
+        startMs: segment.startMs,
+        endMs: segment.endMs,
       })),
       protectedRows: [],
       precedingRows: [],

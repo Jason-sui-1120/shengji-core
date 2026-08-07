@@ -12,7 +12,18 @@ const { createLiveAsrSession, getUpstreamReconnectPlan } = await import(moduleUr
 const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-service.mjs", import.meta.url))
   ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
   : new URL("./rolling-transcript-service.mjs", import.meta.url);
-const { RollingTranscriptService } = await import(rollingModuleUrl);
+const { RollingTranscriptService, boundSegmentsToCommitWindow } = await import(rollingModuleUrl);
+
+test("文件段触及中心区右边界时不得生成零时长稳定稿", () => {
+  const bounded = boundSegmentsToCommitWindow([
+    { text: "中心区内的有效句子", startMs: 599_700, endMs: 600_100 },
+    { text: "右边界属于下一窗口", startMs: 600_000, endMs: 600_300 },
+  ], { commitStartMs: 555_000, commitEndMs: 600_000 });
+
+  assert.deepEqual(bounded.map(({ text, startMs, endMs }) => ({ text, startMs, endMs })), [
+    { text: "中心区内的有效句子", startMs: 599_700, endMs: 600_000 },
+  ]);
+});
 
 // 1009 的关键不是“尽快重连”，而是等待 AIT 释放旧任务名额；否则 4 分钟轮换后
 // 会持续撞并发上限，表现为实时转写完全停止。此处锁定 30s / 60s / 90s 的退避。
