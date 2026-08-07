@@ -13,6 +13,10 @@ const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-servi
   ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
   : new URL("./rolling-transcript-service.mjs", import.meta.url);
 const { RollingTranscriptService, boundSegmentsToCommitWindow } = await import(rollingModuleUrl);
+const helpersModuleUrl = existsSync(new URL("../modules/live-asr-helpers.mjs", import.meta.url))
+  ? new URL("../modules/live-asr-helpers.mjs", import.meta.url)
+  : new URL("./live-asr-helpers.mjs", import.meta.url);
+const { clampMeetingTranscriptTimeline } = await import(helpersModuleUrl);
 
 test("文件段触及中心区右边界时不得生成零时长稳定稿", () => {
   const bounded = boundSegmentsToCommitWindow([
@@ -23,6 +27,30 @@ test("文件段触及中心区右边界时不得生成零时长稳定稿", () =>
   assert.deepEqual(bounded.map(({ text, startMs, endMs }) => ({ text, startMs, endMs })), [
     { text: "中心区内的有效句子", startMs: 599_700, endMs: 600_000 },
   ]);
+});
+
+test("封存时超出源音频终点的自动稳定稿必须删除，不能留下零时长行", () => {
+  const rows = [
+    { id: 1, audioStartMs: 590_000, audioEndMs: 600_000, audioDurationMs: 10_000, userEdited: 0 },
+    { id: 2, audioStartMs: 600_000, audioEndMs: 600_000, audioDurationMs: 2_000, userEdited: 0 },
+  ];
+  const updated = [];
+  const discarded = [];
+  const db = {
+    prepare(sql) {
+      if (sql.includes("SELECT id, audio_start_ms")) return { all: () => rows };
+      if (sql.includes("SET audio_start_ms")) return { run: (...values) => updated.push(values) };
+      if (sql.includes("SET deleted_at")) return { run: (...values) => discarded.push(values) };
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+  };
+
+  clampMeetingTranscriptTimeline(db, 7, 600_000);
+
+  assert.deepEqual(updated, []);
+  assert.equal(discarded.length, 1);
+  assert.equal(discarded[0][1], 2);
+  assert.equal(discarded[0][2], 7);
 });
 
 // 1009 的关键不是“尽快重连”，而是等待 AIT 释放旧任务名额；否则 4 分钟轮换后

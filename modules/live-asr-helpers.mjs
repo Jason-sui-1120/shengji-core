@@ -747,7 +747,7 @@ export async function checkpointMeetingSourceAudio(meetingId, status = "partial"
   return { audioPath: state.audioPath, bytes, durationMs, status: checkpointStatus };
 }
 
-function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
+export function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
   const total = Math.max(0, Number(durationMs || 0));
   if (!total) return;
   const rows = db.prepare(`
@@ -766,11 +766,28 @@ function clampMeetingTranscriptTimeline(db, meetingId, durationMs) {
     const originalEnd = Number(row.audioEndMs || 0);
     const estimated = Math.max(250, Number(row.audioDurationMs || 0));
     let start = Math.min(total, Math.max(cursor, Math.max(0, Number.isFinite(originalStart) ? originalStart : 0)));
+    // 封存时文件 ASR 可能仍带有略超出录音尾部的时间戳。此前 start 被钳到
+    // total 后又继续保留，最终落成 start === end 的“幽灵行”：文字存在，但
+    // 回放永远无法定位。自动生成行应直接丢弃；人工编辑绝不能删除，改锚定到
+    // 最后一个可播放的小区间，由后续人工编辑继续决定其精确位置。
+    if (start >= total) {
+      if (!row.userEdited) {
+        discard.run(new Date().toISOString(), row.id, Number(meetingId || 0));
+        continue;
+      }
+      start = Math.max(0, total - estimated);
+    }
     let end = Number.isFinite(originalEnd) && originalEnd > start
       ? Math.min(total, originalEnd)
       : Math.min(total, start + estimated);
-    if (end <= start) end = Math.min(total, start + estimated);
-    if (start > total) { discard.run(new Date().toISOString(), row.id, Number(meetingId || 0)); continue; }
+    if (end <= start) {
+      if (!row.userEdited) {
+        discard.run(new Date().toISOString(), row.id, Number(meetingId || 0));
+        continue;
+      }
+      start = Math.max(0, total - estimated);
+      end = total;
+    }
     if (start !== originalStart || end !== originalEnd) update.run(start, end, row.id, Number(meetingId || 0));
     cursor = end;
   }
