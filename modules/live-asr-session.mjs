@@ -67,11 +67,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // 上游 LM 模型可能长时间只发 TranscriptionResultChanged 而不发
     // SentenceEnd；实时草稿不能因此一直堆在顶部卡片。达到这个间隔后，
     // 共享会话会把已确认的 partial 前缀落成一条 draft，后续稳定稿再替换它。
-    ASR_PARTIAL_PROGRESS_INTERVAL_MS: 12_000,
+    ASR_PARTIAL_PROGRESS_INTERVAL_MS: 5_000,
     ASR_PARTIAL_PROGRESS_MIN_CHARS: 24,
     ASR_PARTIAL_PROGRESS_MAX_CHARS: 120,
-    // 可选纠错/声纹步骤不能阻塞实时 flush 队列；超时后保留原文继续落库。
-    ASR_OPTIONAL_STEP_TIMEOUT_MS: 3_000,
+    // 词库在会话初始化时异步预热；草稿落库不能等待词库、声纹或 LLM。
     ASR_GLOSSARY_TIMEOUT_MS: 1_500,
     ROLLING_ASR_TIMEOUT_MS: 90_000,
     TAIL_STABILIZATION_TIMEOUT_MS: 60_000,
@@ -219,15 +218,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let pendingSpeechStartAt = "";
   let pendingSpeechStartAudioMs = null;
   let latestPartial = "";
-  // 当前 flush 快照对应的实时预览 ID。稳定行通过 WS 明确告知前端替换关系，
-  // 不再依赖模糊的时间重叠判断。
-  let transcriptBufferPreviewIds = [];
   // LM 类模型（huoshanLM）的 TranscriptionResultChanged 是"从句首到当前"的
   // 累积快照，且对英文长句不发 SentenceEnd。vad.endpoint 的兜底 flush 会用
   // latestPartial 落库，若不加抑制会把同一句话的快照反复落库（前缀累积重复行）。
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
-  let realtimeSegmentSequence = 0;
   let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs }——去重要区间重叠+文本双条件
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
@@ -280,8 +275,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let sealingAbortSignal = null;
   let sealingPromise = null;
   let stopRequested = false;
-  let lastSpeakerIdentifyAt = 0;
-  let latestSpeakerResult = null;
   // 会议时间轴只由已经持久化的 PCM 样本数决定。elapsed_seconds 是展示缓存，
   // 不能再和源 WAV 时长相加，否则暂停/断线后恢复会把旧时长重复计算。
   // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
@@ -319,6 +312,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let rollingCommitCursorMs = rollingResumeAudio.commitEndMs;
   // deps.getLatestTranscriptId 允许是 async（公司端 MySQL）；await 对同步实现同样安全。
   let rollingStartTranscriptId = await deps.getLatestTranscriptId(meetingId);
+  // 词库只影响“草稿的确定性规范化”和上游热词。它可能需要 MySQL 查询，但不能
+  // 把 SentenceEnd 的草稿落库阻塞几秒。连接建立后异步预热；尚未完成时保留 ASR
+  // 原文，45 秒文件稿仍会使用完整词库校正并覆盖该区间。
+  let cachedAsrHotwords = [];
+  let cachedGlossaryEntries = [];
+  void Promise.resolve(typeof deps.getAsrHotwordsForMeeting === "function"
+    ? deps.getAsrHotwordsForMeeting(meetingId)
+    : [])
+    .then((entries) => { cachedAsrHotwords = Array.isArray(entries) ? entries : []; })
+    .catch((error) => console.warn(`[asr/live] hotword preload failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`));
+  void Promise.resolve(typeof deps.getMeetingGlossaryEntries === "function"
+    ? deps.getMeetingGlossaryEntries(meetingId)
+    : [])
+    .then((entries) => { cachedGlossaryEntries = Array.isArray(entries) ? entries : []; })
+    .catch((error) => console.warn(`[asr/live] glossary preload failed meeting=${meetingId}: ${error instanceof Error ? error.message : error}`));
   connectUpstream();
 
   function safeSend(payload) {
@@ -424,13 +432,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     current.on("open", async () => {
       if (current !== upstream || upstreamStopped) return;
       upstreamOpen = true;
-      // 从数据库查询项目热词，传入 ASR 识别时生效
-      let hotwordText = "";
-      try {
-        // P0：Adapter 可能返回 Promise（公司端 async），core 统一 await Promise.resolve。
-        const allTerms = await Promise.resolve(deps.getAsrHotwordsForMeeting(meetingId));
-        if (allTerms.length) hotwordText = allTerms.join(",");
-      } catch { /* ignore glossary errors */ }
+      // 词库已在会话初始化时异步预热。上游 StartTranscription 不等待数据库，避免
+      // 公司端 MySQL 慢查询直接放大为“开始录音后几秒没有实时转写”。
+      const hotwordText = cachedAsrHotwords.join(",");
 
       const payload = {
         format: "pcm",
@@ -1373,7 +1377,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
   function schedulePartialProgressFlush() {
     if (partialProgressTimer || upstreamStopped || stopRequested || transcriptBuffer || !latestPartial) return;
-    const delay = Math.max(3_000, Number(config.ASR_PARTIAL_PROGRESS_INTERVAL_MS || 12_000));
+    const delay = Math.max(3_000, Number(config.ASR_PARTIAL_PROGRESS_INTERVAL_MS || 5_000));
     partialProgressTimer = setTimeout(() => {
       partialProgressTimer = null;
       const candidate = deps.normalizeTranscriptSegment(latestPartial);
@@ -1448,30 +1452,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const cleanedSegment = deps.removeFillerWords(segment);
     if (!cleanedSegment) return null;
 
-    // SentenceEnd 是流式模型已经确认的句界。它必须立刻进入客户端时间轴，
-    // 而不能只拼进一个"当前正在识别"的气泡，等到 45 秒文件校准才突然出现。
-    // 这是仅用于展示的实时预览；真正持久化仍由后续 flush 完成。
-    const previewStartMs = timedStartMs ?? pendingSpeechStartAudioMs ?? getTranscriptAudioOffsetMs();
-    const previewEndMs = Math.max(previewStartMs + 1, timedEndMs ?? getTranscriptAudioOffsetMs());
-    if (client.readyState === WebSocket.OPEN) {
-      realtimeSegmentSequence += 1;
-      const previewId = -realtimeSegmentSequence;
-      transcriptBufferPreviewIds.push(previewId);
-      safeSend({
-        type: "transcript.realtime_segment",
-        segment: {
-          id: previewId,
-          time: deps.formatMeetingElapsedTime(previewStartMs / 1000),
-          speaker: latestSpeakerResult?.speaker || "待识别",
-          text: cleanedSegment,
-          audioStartMs: Math.round(previewStartMs),
-          audioEndMs: Math.round(previewEndMs),
-          stabilityStatus: "draft",
-          qualityStatus: "realtime",
-          isRealtimePreview: true,
-        },
-      });
-    }
+    // SentenceEnd 是流式模型已经确认的句界。它会在短延迟后直接写入服务端
+    // 草稿时间轴；不再额外创建只能靠模糊规则清理的浏览器预览行。这样时间轴
+    // 始终只有一个权威来源：持久化草稿或文件 ASR 稳定稿。
     if (!transcriptBuffer) {
       transcriptBufferStartedAudioMs = timedStartMs ?? pendingSpeechStartAudioMs ?? getTranscriptAudioOffsetMs();
       transcriptBufferStartedAt = timedStartMs !== null ? deps.formatMeetingElapsedTime(transcriptBufferStartedAudioMs / 1000) : (pendingSpeechStartAt || getTranscriptTimeLabel());
@@ -1505,8 +1488,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       pendingSpeechStart: pendingSpeechStartAt,
       pendingSpeechStartAudioMs,
       latestPartial,
-      latestSpeaker: latestSpeakerResult,
-      previewIds: [...transcriptBufferPreviewIds],
     };
     // 立即清空活动缓冲——新句子从空 buffer 开始，不与本次 flush 混。
     transcriptBuffer = "";
@@ -1518,7 +1499,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     latestPartial = "";
     speechAudioChunks = [];
     speechAudioBytes = 0;
-    transcriptBufferPreviewIds = [];
 
     flushChain = flushChain.then(() => flushTranscriptBufferInner(reason, options, snapshot)).catch((err) => {
       console.error(`[transcript] flush chain error meeting=${meetingId}: ${err instanceof Error ? err.message : err}`);
@@ -1546,7 +1526,6 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       pendingSpeechStart: pendingSpeechStartAt,
       pendingSpeechStartAudioMs,
       latestPartial,
-      latestSpeaker: latestSpeakerResult,
     };
     let text = deps.normalizeTranscriptSegment(snap.text);
     const usingPartialFallback = !text && Boolean(options.fallbackToPartial);
@@ -1564,6 +1543,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     if (!text) {
       return null;
     }
+    // 这条计时覆盖用户可见的关键路径：上游确认句末/partial 兜底 -> 草稿成功落库。
+    // 不把词库查询、LLM、声纹、分段 WAV 等后台工作计入其中，避免它们拖慢时间轴。
+    const draftPersistStartedAt = Date.now();
     // 最终落库前再次清理 filler
     text = deps.removeFillerWords(text);
     if (!text || deps.isFillerOnly(text)) {
@@ -1590,28 +1572,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     const audioEndMs = timedEndMs > 0
       ? Math.max(audioStartMs, timedEndMs)
       : Math.max(audioStartMs, pcmDerivedEndMs, capturedAtAudioMs);
-    let hotwords = [];
-    let glossaryEntries = [];
-    try {
-      // 草稿元数据必须复用实际送往流式/文件 ASR 的有界热词列表。此前这里
-      // 从原始词库再次展开别名，导致界面记录与模型实际输入不一致。
-      hotwords = await withTimeout(
-        Promise.resolve(deps.getAsrHotwordsForMeeting(meetingId)),
-        config.ASR_GLOSSARY_TIMEOUT_MS,
-        "glossary_lookup",
-      );
-      hotwords = Array.isArray(hotwords) ? hotwords : [];
-    } catch { /* 词库不可用时保留原文 */ }
-    try {
-      // 别名替换仍需要完整的词库条目；它不参与 ASR 请求预算，也不能影响
-      // 上面已取得的有界热词列表。
-      glossaryEntries = await withTimeout(
-        Promise.resolve(deps.getMeetingGlossaryEntries(meetingId)),
-        config.ASR_GLOSSARY_TIMEOUT_MS,
-        "glossary_alias_lookup",
-      );
-      glossaryEntries = Array.isArray(glossaryEntries) ? glossaryEntries : [];
-    } catch { /* 词库不可用时保留原文 */ }
+    // 只读取已预热的会话缓存；这里绝不能再次查询数据库。慢词库/声纹/LLM
+    // 都只能影响后续稳定稿或独立补偿，不能让已确认句末滞留在顶部实时气泡。
+    const hotwords = cachedAsrHotwords;
+    const glossaryEntries = cachedGlossaryEntries;
     if (usingPartialFallback) {
       lastPartialFlushText = text;
       lastPartialFlushAudioStartMs = snap.startedAt
@@ -1622,71 +1586,19 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       lastPartialFlushText = "";
       lastPartialFlushAudioStartMs = 0;
     }
-    // 全局缓冲已在入队时清空（enqueueFlush 里），这里不再重置。
-    if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "status", status: "correcting", reason }));
-    let audioPath = "";
-    let wav = null;
-    try {
-      ({ audioPath, wav } = deps.savePcmAsWav(currentAudioChunks, meetingId));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[transcript] audio save failed meeting=${meetingId}: ${message}`);
-    }
-
-    // 会中草稿只做确定性的词库修正；稳定版本由滚动文件转写统一校准。
-    let correctedText = deps.applyGlossaryAliasCorrections(text, glossaryEntries) || text;
-    // 说话人兜底值用快照的 latestSpeaker（入队时冻结）——不是全局 latestSpeakerResult（可能已被后续段更新），
-    // 防止后续段的说话人状态泄漏到前一段。
-    let speakerResult = snap.latestSpeaker || latestSpeakerResult;
-
-    // 逐句 LLM 纠错和说话人分离会与稳定校准重复。声纹仅低频采样，保留最近可靠说话人作草稿标注。
-    const textCompact = text.replace(/\s/g, "");
-    const shouldRunLiveCorrection = textCompact.length >= 10 && (!config.ROLLING_ASR_ENABLED || config.LIVE_DRAFT_LLM_CORRECTION);
-    const shouldIdentifySpeaker = Boolean(wav?.length)
-      && Number(quality.durationMs || 0) >= 1200
-      && (!config.ROLLING_ASR_ENABLED || Date.now() - lastSpeakerIdentifyAt >= config.LIVE_SPEAKER_IDENTIFY_INTERVAL_MS);
-    const shouldRunDiarization = !deps.config.ROLLING_ASR_ENABLED && textCompact.length >= 10;
-    if (shouldIdentifySpeaker) lastSpeakerIdentifyAt = Date.now();
-
-    const optionalTimeoutMs = Math.max(500, Number(config.ASR_OPTIONAL_STEP_TIMEOUT_MS || 3_000));
-    const [correction, speaker, diarization] = await Promise.allSettled([
-      shouldRunLiveCorrection
-        ? withTimeout(deps.correctTranscriptText({ meetingId, text }), optionalTimeoutMs, "live_correction")
-        : Promise.resolve(correctedText),
-      shouldIdentifySpeaker
-        ? withTimeout(deps.identifySpeakerFromAudio({ meetingId, wav, audioPath }), optionalTimeoutMs, "speaker_identify")
-        : Promise.resolve(snap.latestSpeaker || latestSpeakerResult),
-      shouldRunDiarization
-        ? withTimeout(deps.diarizeSpeakerSegments({ meetingId, wav, audioPath }), optionalTimeoutMs, "diarization")
-        : Promise.resolve([]),
-    ]);
-    if (correction.status === "fulfilled") {
-      correctedText = deps.normalizeTranscriptSegment(correction.value) || text;
-    } else {
-      const message = correction.reason instanceof Error ? correction.reason.message : String(correction.reason);
-      console.error(`[transcript] correction failed meeting=${meetingId}: ${message}`);
-    }
-    if (speaker.status === "fulfilled") {
-      speakerResult = speaker.value || latestSpeakerResult;
-      if (speaker.value) latestSpeakerResult = speaker.value;
-    } else {
-      const message = speaker.reason instanceof Error ? speaker.reason.message : String(speaker.reason);
-      console.error(`[transcript] speaker identify failed meeting=${meetingId}: ${message}`);
-    }
-    const diarizationSegments = diarization.status === "fulfilled" ? diarization.value || [] : [];
-    if (diarization.status === "rejected") {
-      const message = diarization.reason instanceof Error ? diarization.reason.message : String(diarization.reason);
-      console.error(`[transcript] diarization failed meeting=${meetingId}: ${message}`);
-    }
+    // 全局缓冲已在入队时清空（enqueueFlush 里），这里仅做轻量、确定性的草稿
+    // 处理。分段 WAV、实时声纹、逐句 LLM 和 diarization 都由稳定稿/后台补偿承担，
+    // 不能位于这条用户可见的落库关键路径上。
+    const correctedText = deps.applyGlossaryAliasCorrections(text, glossaryEntries) || text;
 
     const lineDrafts = await deps.buildTranscriptLineDrafts({
       meetingId,
       startedAt,
       text: correctedText,
-      fallbackSpeaker: speakerResult,
-      audioPath,
-      wav,
-      diarizationSegments,
+      fallbackSpeaker: null,
+      audioPath: "",
+      wav: null,
+      diarizationSegments: [],
       audioStartMs,
       audioEndMs,
     });
@@ -1720,9 +1632,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     }
 
     const correctionApplied = deps.normalizeTranscriptSegment(correctedText) !== deps.normalizeTranscriptSegment(text);
-    const correctionReason = correctionApplied
-      ? (shouldRunLiveCorrection ? "glossary_or_llm" : "glossary")
-      : "";
+    const correctionReason = correctionApplied ? "glossary" : "";
     const insertedLines = [];
     try {
       for (const draft of timelineLineDrafts) {
@@ -1750,15 +1660,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     }
     // 快照机制已下线（两端纪要统一实时查 transcripts 表）；保留可选调用兼容旧端侧注入。
     deps.refreshMeetingTranscriptSnapshotDebounced?.(meetingId);
-    for (const [index, line] of insertedLines.entries()) {
-      // 一个 flush 可能因声纹轨道拆成多行；只需让第一条稳定行携带本次快照
-      // 的全部 preview IDs，前端就能一次性精确清理对应临时行。
-      const wireLine = index === 0 && snap.previewIds?.length
-        ? { ...line, replacedPreviewIds: snap.previewIds }
-        : line;
-      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line: wireLine }));
+    const draftPersistLatencyMs = Date.now() - draftPersistStartedAt;
+    for (const line of insertedLines) {
+      // 浏览器时间轴只接受已持久化的行；不再发客户端临时分段及其 replacement hint。
+      // 稳定稿以数据库的原子中心区间替换为准，前端下一次 state 刷新直接反映该结果。
+      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line }));
       if (line.stabilityStatus === "stable") deps.scheduleServerAutoAnalyze(meetingId, line.stableRevision);
     }
+    safeSend({
+      type: "status",
+      status: "draft_persisted",
+      reason,
+      lineCount: insertedLines.length,
+      latencyMs: draftPersistLatencyMs,
+    });
+    console.info(`[transcript] draft persisted meeting=${meetingId} reason=${reason} lines=${insertedLines.length} latencyMs=${draftPersistLatencyMs}`);
     return insertedLines.at(-1) || null;
   }
 

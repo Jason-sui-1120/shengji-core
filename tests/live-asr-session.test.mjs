@@ -296,7 +296,7 @@ test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残�
   assert.equal(calls.finalized[0][1], "file_canonical");
 });
 
-test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿", async () => {
+test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟落为草稿", async () => {
   const inserted = [];
   const realtimeClient = {
     readyState: FakeSocket.OPEN,
@@ -334,15 +334,17 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿
     normalizeTranscriptDraftTimeline: (_meetingId, lines) => lines,
     persistMeetingElapsedSeconds: () => {},
     checkpointMeetingSourceAudio: async () => {},
-    getAsrHotwordsForMeeting: () => [],
-    getMeetingGlossaryEntries: () => [],
+    // 词库预热即使慢，也不能阻塞已确认句末进入持久化时间轴。
+    getAsrHotwordsForMeeting: () => new Promise((resolve) => setTimeout(() => resolve(["慢词"]), 200)),
+    getMeetingGlossaryEntries: () => new Promise((resolve) => setTimeout(() => resolve([]), 200)),
     uniqueStrings: (values) => [...new Set(values)],
     isFillerOnly: () => false,
     removeFillerWords: (text) => text,
     mergeTranscriptText: (previous, next) => `${previous}${next}`,
     applyGlossaryAliasCorrections: (text) => text,
     analyzePcmQuality: () => ({ durationMs: 0 }),
-    savePcmAsWav: () => ({ audioPath: "", wav: null }),
+    // 草稿路径不再依赖这些重型步骤；一旦回归到关键路径，测试应立即失败。
+    savePcmAsWav: () => { throw new Error("草稿不得写分段 WAV"); },
     buildTranscriptLineDrafts: ({ text, audioStartMs, audioEndMs }) => [{
       id: 8801,
       time: "00:00",
@@ -356,9 +358,9 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿
     shouldFlushTranscriptBuffer: () => false,
     looksSemanticallyIncomplete: () => false,
     shouldWaitForMoreSpeech: () => false,
-    identifySpeakerFromAudio: () => null,
-    diarizeSpeakerSegments: () => [],
-    correctTranscriptText: ({ text }) => text,
+    identifySpeakerFromAudio: () => { throw new Error("草稿不得等待实时声纹"); },
+    diarizeSpeakerSegments: () => { throw new Error("草稿不得等待实时分离"); },
+    correctTranscriptText: () => { throw new Error("草稿不得等待实时 LLM"); },
     scheduleServerAutoAnalyze: () => {},
     appendMeetingSourceAudio: () => {},
     beginMeetingAiJob: () => {},
@@ -369,6 +371,7 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿
   upstream.emit("open");
   await new Promise((resolve) => setTimeout(resolve, 0));
   // 不发送 vad.speech_start / vad.endpoint，直接模拟上游已经确认句末。
+  const sentenceEndAt = Date.now();
   upstream.emit("message", JSON.stringify({
     header: { name: "SentenceEnd" },
     payload: { result: "这条确认句末必须进入草稿列表。", begin_time: 0, end_time: 1200 },
@@ -378,11 +381,13 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立落为草稿
   await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(inserted.length, 1);
+  assert.ok(Date.now() - sentenceEndAt < 150, "确认句末不应被慢词库或后台 AI 阻塞");
   assert.equal(inserted[0].text, "这条确认句末必须进入草稿列表。");
   assert.ok(realtimeClient.sent.some((item) => {
     const message = JSON.parse(item);
     return message.type === "transcript.final" && message.line?.text === "这条确认句末必须进入草稿列表。";
   }));
+  assert.equal(realtimeClient.sent.some((item) => JSON.parse(item).type === "transcript.realtime_segment"), false);
   realtimeClient.handlers.get("close")();
 });
 
