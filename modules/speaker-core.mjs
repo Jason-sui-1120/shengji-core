@@ -3,7 +3,11 @@
  * diarization 响应归一化、置信度/时间规范化、音频 URL 生成、AI 可用性判断。
  */
 import path from "node:path";
-import { AIT_PUBLIC_BASE_URL, AI_GATEWAY_BASE_URL, AIT_API_KEY } from "./config.mjs";
+import {
+  AIT_PUBLIC_BASE_URL, AIT_AUDIO_URL_SIGNING_SECRET,
+  AI_GATEWAY_BASE_URL, AIT_API_KEY, SESSION_SIGNATURE,
+} from "./config.mjs";
+import { createRollingAudioAccessQuery } from "./audio-access-signature.mjs";
 import { normalizeSpeakerKey } from "./text-utils.mjs";
 
 export function hasAiAccess() {
@@ -22,10 +26,23 @@ export function normalizeConfidence(value) {
   return Math.max(1, Math.min(99, number <= 1 ? Math.round(number * 100) : Math.round(number)));
 }
 
-export function getSpeakerAudioUrl(audioPath, wav) {
+export function getSpeakerAudioUrl(audioPath, wav, meetingId) {
   if (AIT_PUBLIC_BASE_URL && audioPath) {
-    const fileName = encodeURIComponent(path.basename(audioPath));
-    return `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${fileName}`;
+    const fileName = path.basename(audioPath);
+    // 公司端复用既有 SESSION_SIGNATURE 作为兼容密钥，并以 PURPOSE 做 HMAC 域隔离；
+    // 后续可单独配置 AIT_AUDIO_URL_SIGNING_SECRET，无需变更调用方。
+    const access = createRollingAudioAccessQuery({
+      secret: AIT_AUDIO_URL_SIGNING_SECRET || SESSION_SIGNATURE,
+      meetingId,
+      fileName,
+    });
+    if (access) {
+      const params = new URLSearchParams({ expires: String(access.expiresAt), signature: access.signature });
+      return `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${encodeURIComponent(fileName)}?${params}`;
+    }
+    // 公网端本来就是公开音频路由，未配置签名密钥时保留原 URL 行为，
+    // 不能因为公司端的权限修复让大于 data URL 上限的窗口失去分离能力。
+    return `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${encodeURIComponent(fileName)}`;
   }
   if (!wav?.length || wav.length > 2_000_000) return "";
   return `data:audio/wav;base64,${wav.toString("base64")}`;

@@ -1,6 +1,6 @@
 {
-  "version": "1.15.1",
-  "releasedAt": "2026-08-07",
+  "version": "1.15.2",
+  "releasedAt": "2026-08-09",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
     {
@@ -10,6 +10,10 @@
     {
       "file": "audio-utils.mjs",
       "sha256": "478763912590736a94181edfc89f720a827d87b7749c1de20d5346a158de8854"
+    },
+    {
+      "file": "audio-access-signature.mjs",
+      "sha256": "04bb7f85133b5b2fb0776e241ec910bae324e144cb067341885440c4eb37a992"
     },
     {
       "file": "deployment.mjs",
@@ -89,7 +93,7 @@
     },
     {
       "file": "speaker-core.mjs",
-      "sha256": "8e156b9ff44ad4d2a9d5ed691f1e869de52326c75a039405950164718c2b73b0"
+      "sha256": "bdab1645e53c3b4dee2756b58c2e75dbe394546469931edbbb2f3ae0f5325058"
     },
     {
       "file": "speaker-gateway.mjs",
@@ -105,7 +109,7 @@
     },
     {
       "file": "speakers.mjs",
-      "sha256": "10b1968723946cba74d4138bd502c5f27506e0406d8fbcbd7b2cb1234d463db9"
+      "sha256": "5d62ea20513ac3af50095c5c949bf61223658bf92642c8a323772bd3b67c791f"
     },
     {
       "file": "tail-stabilization.mjs",
@@ -247,7 +251,7 @@
     },
     {
       "file": "speaker-timeline.test.mjs",
-      "sha256": "89823cd687e9369ff240920d31e2c3b5772f340bd3f87708a67ba1f8b4f3d292"
+      "sha256": "61560496623dd3e72784844b15553d617c86cfabee1bb934fcec71efb6866533"
     },
     {
       "file": "tail-stabilization.test.mjs",

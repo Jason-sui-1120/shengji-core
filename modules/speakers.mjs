@@ -28,7 +28,7 @@ export async function identifySpeakerFromAudio({ meetingId, wav, audioPath }) {
 
 export async function diarizeSpeakerSegments({ meetingId, wav, audioPath, timeoutMs }) {
   if (!hasAiAccess() || !wav?.length) return [];
-  const audioUrl = getSpeakerAudioUrl(audioPath, wav);
+  const audioUrl = getSpeakerAudioUrl(audioPath, wav, meetingId);
   if (!/^(https?:\/\/|data:audio\/wav;base64,)/i.test(audioUrl)) return [];
   try {
     const response = await callSpeakerDiarization({

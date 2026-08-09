@@ -14,6 +14,25 @@ const speakersModuleUrl = existsSync(new URL("../modules/speakers.mjs", import.m
   ? new URL("../modules/speakers.mjs", import.meta.url)
   : new URL("./speakers.mjs", import.meta.url);
 const { normalizeDiarizationSegments } = await import(speakersModuleUrl);
+const audioSignatureModuleUrl = existsSync(new URL("../modules/audio-access-signature.mjs", import.meta.url))
+  ? new URL("../modules/audio-access-signature.mjs", import.meta.url)
+  : new URL("./audio-access-signature.mjs", import.meta.url);
+const {
+  createRollingAudioAccessQuery,
+  verifyRollingAudioAccessQuery,
+} = await import(audioSignatureModuleUrl);
+
+test("滚动音频签名只允许当前会议、当前文件且会过期", () => {
+  const secret = "test-only-secret";
+  const fileName = "meeting-77-rolling-1234-abcd.wav";
+  const now = 1_000_000;
+  const access = createRollingAudioAccessQuery({ secret, meetingId: 77, fileName, now });
+  assert.ok(access?.signature);
+  assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 77, fileName, now, ...access }), true);
+  assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 78, fileName, now, ...access }), false);
+  assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 77, fileName: "meeting-77-rolling-other.wav", now, ...access }), false);
+  assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 77, fileName, now: access.expiresAt + 1, ...access }), false);
+});
 
 test("0 基分离标签不能把 speaker_0 与 speaker_1 合并成同一人", () => {
   const result = normalizeDiarizationSegments({

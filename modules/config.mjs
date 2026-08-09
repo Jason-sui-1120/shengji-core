@@ -3,6 +3,7 @@
 // 此文件只让 core 模块在 core 仓库内可独立 import/冒烟，默认值与两端 config.mjs 保持一致。
 export const AIT_API_KEY = "";
 export const AIT_PUBLIC_BASE_URL = "";
+export const AIT_AUDIO_URL_SIGNING_SECRET = "";
 export const AI_GATEWAY_BASE_URL = "";
 export const AI_GATEWAY_SHARED_TOKEN = "";
 export const BELLA_API_BASE_URL = "";
@@ -20,3 +21,4 @@ export const SPEAKER_EMBEDDING_THRESHOLD = 0.55;
 export const SPEAKER_CANDIDATE_THRESHOLD = 0.62;
 export const SPEAKER_CANDIDATE_PROMOTE_COUNT = 3;
 export const SPEAKER_DIARIZATION_MIN_SEGMENT_SECONDS = 0.25;
+export const SESSION_SIGNATURE = "";
