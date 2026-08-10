@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import { existsSync } from "node:fs";
+const moduleBase = existsSync(new URL("../modules/transcript-composer.mjs", import.meta.url))
+  ? "../modules/"
+  : "./";
+const {
   buildAbsoluteTimedWords,
   composeCanonicalFileSegments,
   planSpeakerTurnSplits,
-} from "./transcript-composer.mjs";
-import { shouldMapSpeechClock } from "./rolling-window-plan.mjs";
+} = await import(new URL(`${moduleBase}transcript-composer.mjs`, import.meta.url));
+const { shouldMapSpeechClock } = await import(new URL(`${moduleBase}rolling-window-plan.mjs`, import.meta.url));
 
 test("文件模型接近请求尾部结束时不得误判为静音压缩时钟", () => {
   assert.equal(shouldMapSpeechClock({

@@ -13,7 +13,7 @@ import { composeCanonicalFileSegments } from "./transcript-composer.mjs";
 import { computeTranscriptCoverage, planCoverageRepairWindows } from "./transcript-coverage.mjs";
 import { getAbsoluteFileSegments, getCharOverlapRatio, summarizeCompositionSegment, formatMeetingElapsedTime, getFileTimestampScale, normalizeFileTimestamp } from "./file-segments.mjs";
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
-import { extractStableWindowText } from "./transcript-align.mjs";
+import { extractStableWindowText, splitTextByWeights } from "./transcript-align.mjs";
 import {
   assignSpeakersByAbsoluteOverlap,
   buildAbsoluteSpeakerSegments,
@@ -49,6 +49,80 @@ export function boundSegmentsToCommitWindow(segments, { commitStartMs = 0, commi
       return { ...segment, startMs, endMs };
     })
     .filter((segment) => String(segment?.text || "").trim() && segment.endMs > segment.startMs);
+}
+
+/**
+ * 文件转写服务的响应并不保证总能提供可用的 segments/words 时间戳：有些成功
+ * 响应只有全文 text。不能一方面接受这种结果，另一方面又因为不能生成 canonical
+ * 段而让整窗稳定稿失败。这里保守地复用浏览器实时 ASR 已经落下的 VAD 时间轴，
+ * 只把“文字事实”替换为文件 ASR 的文字；不猜测新的音频时间，也不使用 LLM 改写。
+ */
+export function buildFileTextTimingFallbackSegments(text, speakerRows = [], {
+  commitStartMs = 0,
+  commitEndMs = 0,
+} = {}) {
+  const normalizedText = normalizeTranscriptSegment(text);
+  const lowerBound = Math.max(0, Math.round(Number(commitStartMs || 0)));
+  const upperBound = Math.max(lowerBound + 1, Math.round(Number(commitEndMs || lowerBound + 1)));
+  if (!normalizedText) return [];
+
+  const timedRows = (Array.isArray(speakerRows) ? speakerRows : [])
+    .map((row) => {
+      const rawStartMs = Math.round(Number(row?.audioStartMs ?? row?.audio_start_ms ?? 0));
+      const rawEndMs = Math.round(Number(row?.audioEndMs ?? row?.audio_end_ms ?? 0));
+      return {
+        startMs: Math.max(lowerBound, rawStartMs),
+        endMs: Math.min(upperBound, rawEndMs),
+        speaker: String(row?.speaker || "").trim(),
+        speakerSource: String(row?.speakerSource ?? row?.speaker_source ?? "").trim(),
+        speakerConfidence: Number(row?.speakerConfidence ?? row?.speaker_confidence ?? 0),
+      };
+    })
+    .filter((row) => row.endMs > row.startMs)
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+
+  // 在实时草稿尚未来得及落库的极早窗口，仍让文件稿作为一条稳定记录落轴；
+  // 使用提交区间而非凭空生成更细的句子时间。
+  if (!timedRows.length) {
+    return [{
+      text: normalizedText,
+      startMs: lowerBound,
+      endMs: upperBound,
+      timestampMode: "realtime_timing_fallback",
+    }];
+  }
+
+  const pieces = splitTextByWeights(
+    normalizedText,
+    timedRows.map((row) => Math.max(1, row.endMs - row.startMs)),
+  );
+  return timedRows
+    .map((row, index) => ({
+      ...row,
+      text: normalizeTranscriptSegment(pieces[index]),
+      timestampMode: "realtime_timing_fallback",
+    }))
+    .filter((segment) => segment.text && segment.endMs > segment.startMs);
+}
+
+function summarizeFileAsrResultShape(result) {
+  const segments = Array.isArray(result?.segments) ? result.segments : [];
+  const words = Array.isArray(result?.words) ? result.words : [];
+  const hasTimedRange = (item) => {
+    const start = Number(item?.start ?? item?.start_time ?? item?.startTime);
+    const end = Number(item?.end ?? item?.end_time ?? item?.endTime);
+    return Number.isFinite(start) && Number.isFinite(end) && end > start;
+  };
+  const hasText = (item) => normalizeTranscriptSegment(item?.text ?? item?.word ?? item?.token).length > 0;
+  return {
+    keys: Object.keys(result || {}).sort().slice(0, 12),
+    textChars: normalizeTranscriptSegment(result?.text).length,
+    segmentCount: segments.length,
+    segmentTextCount: segments.filter(hasText).length,
+    segmentTimedCount: segments.filter((item) => hasText(item) && hasTimedRange(item)).length,
+    wordCount: words.length,
+    wordTimedCount: words.filter((item) => hasText(item) && hasTimedRange(item)).length,
+  };
 }
 
 /**
@@ -207,13 +281,36 @@ export class RollingTranscriptService {
         sourceSpeechIntervals,
         previousStableText,
         speakerRows: candidateRows,
+        fallbackText: correctedText,
         model,
         hotwords: hotwordText ? hotwordText.split(",").filter(Boolean) : [],
         audioPath,
         abortSignal,
       });
-      if (!replacement.insertedCount) throw new Error("file transcription produced no canonical stable segments");
-      if (windowRunId) await this.store.finalizeWindowRun(windowRunId, "file_canonical", replacement.insertedCount, replacement.compositionTrace);
+      if (!replacement.insertedCount) {
+        // 只记录响应形状和计数，不记录用户会议文本或音频内容；这样线上能区分
+        // “AIT 没给时间戳”与“我们的候选/裁剪逻辑把段全部丢掉”。
+        console.error(`[rolling-asr] canonical segment rejection meeting=${Number(meetingId)} diagnostics=${JSON.stringify({
+          fileResult: summarizeFileAsrResultShape(result),
+          rows: rows.length,
+          candidateRows: candidateRows.length,
+          commitStartMs: effectiveWindowStartMs,
+          commitEndMs: effectiveWindowEndMs,
+          composition: replacement.compositionTrace || {},
+        })}`);
+        throw new Error("file transcription produced no canonical stable segments");
+      }
+      const alignmentMode = replacement.usedTextTimingFallback ? "file_text_timing_fallback" : "file_canonical";
+      if (replacement.usedTextTimingFallback) {
+        console.warn(`[rolling-asr] applied text-only file ASR with realtime timing meeting=${Number(meetingId)} diagnostics=${JSON.stringify({
+          fileResult: summarizeFileAsrResultShape(result),
+          candidateRows: candidateRows.length,
+          insertedCount: replacement.insertedCount,
+          commitStartMs: effectiveWindowStartMs,
+          commitEndMs: effectiveWindowEndMs,
+        })}`);
+      }
+      if (windowRunId) await this.store.finalizeWindowRun(windowRunId, alignmentMode, replacement.insertedCount, replacement.compositionTrace);
       await this.afterStableCorrection(meetingId, replacement.stableRevision);
 
       // 说话人分离是增强项，不得卡住文本稳定化、窗口提交或会议结束。
@@ -243,7 +340,7 @@ export class RollingTranscriptService {
         hotwordCount,
         hotwordChars: hotwordText.length,
         stableRevision: replacement.stableRevision,
-        alignmentMode: "file_canonical",
+        alignmentMode,
         windowStartAudioMs,
         windowEndAudioMs,
         commitEndAudioMs: effectiveWindowEndMs,
@@ -271,6 +368,7 @@ export class RollingTranscriptService {
     sourceSpeechIntervals = [],
     previousStableText = "",
     speakerRows = [],
+    fallbackText = "",
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     glossaryEntries = [],
@@ -293,7 +391,24 @@ export class RollingTranscriptService {
         auditTrace: previewAuditTrace,
       },
     );
-    if (!preview.length) return { insertedCount: 0, deletedCount: 0, lastTranscriptId: 0 };
+    const normalizedFallbackText = normalizeTranscriptSegment(fallbackText);
+    // 只有全文 text 的成功响应使用实时 VAD 时间轴受控落轴；没有文本时仍然
+    // 保持原有失败语义，绝不凭空把草稿标成稳定稿。
+    if (!preview.length && !normalizedFallbackText) {
+      return {
+        insertedCount: 0,
+        deletedCount: 0,
+        lastTranscriptId: 0,
+        compositionTrace: {
+          version: 1,
+          effectiveWindowStartMs: Math.round(Number(effectiveWindowStartMs || 0)),
+          effectiveWindowEndMs: Math.round(Number(effectiveWindowEndMs || 0)),
+          previewTiming: previewAuditTrace,
+          preview: [],
+          rejectedReason: "no_file_timestamps_or_text",
+        },
+      };
+    }
 
     // 同一事务内替换窗口旧自动行并插入新的 canonical 段。
     // 不可先单独删除再插入：文件段的构成或数据库写入失败时，旧做法会让
@@ -310,6 +425,7 @@ export class RollingTranscriptService {
       previousStableText,
       sourceSpeechIntervals,
       speakerRows,
+      fallbackText: normalizedFallbackText,
       model,
       hotwords,
       glossaryEntries,
@@ -327,6 +443,7 @@ export class RollingTranscriptService {
         effectiveWindowEndMs: Math.round(Number(effectiveWindowEndMs || 0)),
         previewTiming: previewAuditTrace,
         preview: preview.map(summarizeCompositionSegment),
+        usedTextTimingFallback: Boolean(inserted.usedTextTimingFallback),
         deletedCount: Number(inserted.deletedCount || 0),
         replacementInTransaction: true,
         insertion: inserted.compositionTrace || {},
@@ -350,6 +467,7 @@ export class RollingTranscriptService {
     previousStableText = "",
     sourceSpeechIntervals = [],
     speakerRows = [],
+    fallbackText = "",
     model = ROLLING_ASR_MODEL,
     hotwords = [],
     replaceExistingAutoRows = false,
@@ -366,7 +484,7 @@ export class RollingTranscriptService {
       ? Number(effectiveWindowEndMs)
       : Number(windowEndAudioMs || Number.MAX_SAFE_INTEGER) - Math.max(0, Number(trimTrailingSeconds || 0)) * 1000;
 
-    const candidateSegments = applySpeakerHintsToFileSegments(getAbsoluteFileSegments(
+    const timestampSegments = getAbsoluteFileSegments(
       fileResult,
       trimLeadingSeconds,
       windowStartAudioMs,
@@ -374,7 +492,12 @@ export class RollingTranscriptService {
       trimTrailingSeconds,
       Math.max(0, Number(windowEndAudioMs || 0) - Number(windowStartAudioMs || 0)),
       { sourceSpeechIntervals, commitStartMs, commitEndMs, auditTrace },
-    ), speakerRows).map((segment) => ({
+    );
+    const usedTextTimingFallback = !timestampSegments.length && Boolean(normalizeTranscriptSegment(fallbackText));
+    const rawCandidateSegments = usedTextTimingFallback
+      ? buildFileTextTimingFallbackSegments(fallbackText, speakerRows, { commitStartMs, commitEndMs })
+      : timestampSegments;
+    const candidateSegments = applySpeakerHintsToFileSegments(rawCandidateSegments, speakerRows).map((segment) => ({
       ...segment,
       text: applyGlossaryAliasCorrections(segment.text, glossaryEntries) || segment.text,
       startMs: Math.max(0, Number(segment.startMs || 0)),
@@ -386,7 +509,8 @@ export class RollingTranscriptService {
         insertedCount: 0,
         insertedIds: [],
         lastTranscriptId: 0,
-        compositionTrace: { commitStartMs, commitEndMs, timing: auditTrace, candidates: [], canonical: [], inserted: [] },
+        usedTextTimingFallback,
+        compositionTrace: { commitStartMs, commitEndMs, timing: auditTrace, usedTextTimingFallback, candidates: [], canonical: [], inserted: [] },
       };
     }
 
@@ -394,7 +518,9 @@ export class RollingTranscriptService {
       windowStartMs: commitStartMs,
       windowEndMs: Math.max(commitStartMs + 1, commitEndMs),
       protectedRows: [],
-      precedingRows: [],
+      // 上一个中心区已经是稳定稿事实来源。只有明确的连续前后缀才裁剪，避免
+      // 相邻窗口的重叠区把同一句再次插入；不是泛化 LCS，不会删除真实重复表达。
+      precedingRows: previousStableText ? [{ text: previousStableText, audioEndMs: commitStartMs }] : [],
     });
 
     if (!segments.length) {
@@ -404,6 +530,7 @@ export class RollingTranscriptService {
         lastTranscriptId: 0,
         compositionTrace: {
           commitStartMs, commitEndMs, timing: auditTrace,
+          usedTextTimingFallback,
           candidates: candidateSegments.map(summarizeCompositionSegment),
           canonical: [], inserted: [],
         },
@@ -421,6 +548,7 @@ export class RollingTranscriptService {
         lastTranscriptId: 0,
         compositionTrace: {
           commitStartMs, commitEndMs, timing: auditTrace,
+          usedTextTimingFallback,
           candidates: candidateSegments.map(summarizeCompositionSegment),
           canonical: segments.map(summarizeCompositionSegment),
           inserted: [],
@@ -438,7 +566,7 @@ export class RollingTranscriptService {
         endMs: segment.endMs,
       })),
       protectedRows: [],
-      precedingRows: [],
+      precedingRows: previousStableText ? [{ text: previousStableText, audioEndMs: commitStartMs }] : [],
       model,
       audioPath,
       windowStartMs: commitStartMs,
@@ -451,9 +579,11 @@ export class RollingTranscriptService {
       insertedIds,
       stableRevision: Number(stableRevision || 0),
       deletedCount: Number(deletedCount || 0),
+      usedTextTimingFallback,
       lastTranscriptId: insertedIds[insertedIds.length - 1] || 0,
       compositionTrace: {
         commitStartMs, commitEndMs, timing: auditTrace,
+        usedTextTimingFallback,
         candidates: candidateSegments.map(summarizeCompositionSegment),
         canonical: segments.map(summarizeCompositionSegment),
         inserted: [],

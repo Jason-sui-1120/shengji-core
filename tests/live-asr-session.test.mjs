@@ -12,7 +12,10 @@ const { createLiveAsrSession, getUpstreamReconnectPlan, shouldSuppressLiveTransc
 const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-service.mjs", import.meta.url))
   ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
   : new URL("./rolling-transcript-service.mjs", import.meta.url);
-const { RollingTranscriptService, boundSegmentsToCommitWindow } = await import(rollingModuleUrl);
+const {
+  RollingTranscriptService,
+  boundSegmentsToCommitWindow,
+} = await import(rollingModuleUrl);
 const helpersModuleUrl = existsSync(new URL("../modules/live-asr-helpers.mjs", import.meta.url))
   ? new URL("../modules/live-asr-helpers.mjs", import.meta.url)
   : new URL("./live-asr-helpers.mjs", import.meta.url);
@@ -197,6 +200,78 @@ test("文件 ASR 直接插入稳定稿后必须通知自动分析", async () => 
   assert.equal(result.insertedCount, 1);
   assert.equal(result.stableRevision, 7);
   assert.deepEqual(notifications, [{ meetingId: 77, stableRevision: 7 }]);
+});
+
+test("文件 ASR 只返回全文 text 时，必须借实时 VAD 时间轴生成稳定稿而非整窗失败", async () => {
+  const calls = { finalized: [], inserted: [] };
+  const fileText = "文件模型只提供全文文字，但稳定稿仍然需要按原有时间轴展示。";
+  const rows = [
+    { id: 601, text: "实时草稿一", speaker: "说话人 1", speakerSource: "rolling_diarization", audioStartMs: 1_000, audioEndMs: 2_000 },
+    { id: 602, text: "实时草稿二", speaker: "待识别", audioStartMs: 2_000, audioEndMs: 4_000 },
+  ];
+  const service = new RollingTranscriptService({
+    createWindowRun: async () => 21,
+    finalizeWindowRun: async (...args) => { calls.finalized.push(args); },
+    listWindowTranscriptRows: async () => rows,
+    getPreviousStableText: async () => "",
+    insertFileAsrStableSegments: async (_meetingId, payload) => {
+      calls.inserted.push(payload);
+      return { insertedCount: payload.segments.length, insertedIds: [7001, 7002], stableRevision: 11, deletedCount: 2 };
+    },
+  }, {
+    callFileTranscription: async () => ({ ok: true, text: JSON.stringify({ result: { text: fileText } }) }),
+    callFileTranscriptionByUrl: async () => ({ ok: true, text: JSON.stringify({ result: { text: fileText } }) }),
+  });
+
+  const result = await service.correctWindow({
+    meetingId: 79,
+    pcm: Buffer.alloc(4 * 16000 * 2),
+    startTranscriptId: 600,
+    endTranscriptId: 602,
+    windowStartAudioMs: 0,
+    windowEndAudioMs: 4_000,
+    centerStartAudioMs: 1_000,
+    centerEndAudioMs: 4_000,
+    getHotwords: async () => [],
+  });
+
+  assert.equal(result.alignmentMode, "file_text_timing_fallback");
+  assert.equal(result.insertedCount, 2);
+  assert.equal(calls.finalized[0][1], "file_text_timing_fallback");
+  assert.equal(calls.inserted.length, 1);
+  assert.deepEqual(
+    calls.inserted[0].segments.map(({ startMs, endMs }) => ({ startMs, endMs })),
+    [{ startMs: 1_000, endMs: 2_000 }, { startMs: 2_000, endMs: 4_000 }],
+  );
+  assert.equal(calls.inserted[0].segments.map((segment) => segment.text).join(""), fileText);
+  assert.equal(calls.inserted[0].segments[0].speaker, "说话人 1");
+  assert.equal(calls.inserted[0].segments[0].speakerSource, "rolling_diarization");
+});
+
+test("text-only 文件稿跨窗口只裁连续前后缀，不能重复插入上一稳定稿", async () => {
+  const calls = [];
+  const service = new RollingTranscriptService({
+    insertFileAsrStableSegments: async (_meetingId, payload) => {
+      calls.push(payload);
+      return { insertedCount: payload.segments.length, insertedIds: [8001], stableRevision: 12, deletedCount: 1 };
+    },
+  });
+  const result = await service.replaceWindowWithFileSegments({
+    meetingId: 80,
+    fileResult: { text: "上一窗口已确认的稳定文字，本窗口新增内容。" },
+    fallbackText: "上一窗口已确认的稳定文字，本窗口新增内容。",
+    previousStableText: "上一窗口已确认的稳定文字，",
+    speakerRows: [{ audioStartMs: 4_000, audioEndMs: 7_000 }],
+    windowStartAudioMs: 4_000,
+    windowEndAudioMs: 7_000,
+    effectiveWindowStartMs: 4_000,
+    effectiveWindowEndMs: 7_000,
+  });
+  assert.equal(result.usedTextTimingFallback, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].segments.length, 1);
+  assert.equal(calls[0].segments[0].text, "本窗口新增内容。");
+  assert.ok(calls[0].segments[0].startMs > 4_000);
 });
 
 test("尾段 deadline 后返回的文件稿不得再写入稳定稿", async () => {

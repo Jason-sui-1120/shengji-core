@@ -1,6 +1,6 @@
 {
-  "version": "1.15.2",
-  "releasedAt": "2026-08-09",
+  "version": "1.15.3",
+  "releasedAt": "2026-08-10",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
     {
@@ -85,7 +85,7 @@
     },
     {
       "file": "rolling-transcript-service.mjs",
-      "sha256": "4c21a462e73351de6f21ca97a4c82ba220ea409e8ee48497101264b980c2c8cc"
+      "sha256": "685a92bf99bfd45c64f99b6cce5cc15051155d2292e3ecdf948b9afcff971544"
     },
     {
       "file": "rolling-window-plan.mjs",
@@ -235,7 +235,7 @@
     },
     {
       "file": "live-asr-session.test.mjs",
-      "sha256": "1c659c18edf66ccc8a835cf3bda4a5da21b93ab22a28beebfc88482021c705f5"
+      "sha256": "23e8198e96ae8e4bbc244865bead6893ebda8d9c9f283a24bbe30a255da6a3f9"
     },
     {
       "file": "model-routing.test.mjs",
@@ -259,7 +259,7 @@
     },
     {
       "file": "transcript-composer.test.mjs",
-      "sha256": "c1d7ebace3aac9628554bcf8ea2a37494b6b7753f266d6a509ab5a39a58679a8"
+      "sha256": "19872132a57de27bad6a933ab0ebac737549d56446a57d35423b64ad29a35e32"
     },
     {
       "file": "transcript-coverage.test.mjs",
@@ -299,7 +299,7 @@
     },
     {
       "file": "transcript-align-zero-overlap.test.mjs",
-      "sha256": "a6e1647fa64b0f3f2debb33c226936a9dc1920f1cc9c321e0c39fa1ec35068bd"
+      "sha256": "4d3c23b8dff852196f41862904dfda3962a499d07e3ecde46b302efd483d5b64"
     },
     {
       "file": "pause-resume-reconnect-timeline.test.mjs",
@@ -379,7 +379,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "88756651beef8486df5991d8f799dda7647b48519027770b92aa4f12fe8278c4"
+      "sha256": "53dc329a07c8154f24129f4ea0dd7291b9f2fd9794de6798d679efaf85483284"
     },
     {
       "file": "README.md",

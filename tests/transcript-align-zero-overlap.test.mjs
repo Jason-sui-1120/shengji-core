@@ -3,7 +3,11 @@
 // 此前会被强行分配给"距离最近"的行，拼进本窗稳定稿。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { alignFileSegmentsToRowsByAbsoluteTime } from "./transcript-align.mjs";
+import { existsSync } from "node:fs";
+const moduleBase = existsSync(new URL("../modules/transcript-align.mjs", import.meta.url))
+  ? "../modules/"
+  : "./";
+const { alignFileSegmentsToRowsByAbsoluteTime } = await import(new URL(`${moduleBase}transcript-align.mjs`, import.meta.url));
 
 const ROWS = [
   { id: 12458, text: "当前窗口的实时草稿", audioStartMs: 239_580, audioEndMs: 268_410 },
