@@ -4,7 +4,7 @@
  */
 import path from "node:path";
 import {
-  AIT_PUBLIC_BASE_URL, AIT_AUDIO_URL_SIGNING_SECRET,
+  AIT_PUBLIC_BASE_URL, PUBLIC_BASE_URL, AIT_AUDIO_URL_SIGNING_SECRET,
   AI_GATEWAY_BASE_URL, AIT_API_KEY, SESSION_SIGNATURE,
 } from "./config.mjs";
 import { createRollingAudioAccessQuery } from "./audio-access-signature.mjs";
@@ -26,8 +26,22 @@ export function normalizeConfidence(value) {
   return Math.max(1, Math.min(99, number <= 1 ? Math.round(number * 100) : Math.round(number)));
 }
 
+/**
+ * 说话人模型读取的是应用生成的短时签名音频 URL。大多数部署只配置
+ * PUBLIC_BASE_URL；AIT_PUBLIC_BASE_URL 仅在 AI 回源域名与应用域名不同时覆盖。
+ * 不能要求两份含义高度重叠的配置同时存在，否则大窗口会在调用分离模型前
+ * 因 data URL 超限静默丢弃。
+ */
+export function resolveSpeakerPublicBaseUrl(
+  aitPublicBaseUrl = AIT_PUBLIC_BASE_URL,
+  publicBaseUrl = PUBLIC_BASE_URL,
+) {
+  return String(aitPublicBaseUrl || publicBaseUrl || "").trim().replace(/\/$/, "");
+}
+
 export function getSpeakerAudioUrl(audioPath, wav, meetingId) {
-  if (AIT_PUBLIC_BASE_URL && audioPath) {
+  const publicBaseUrl = resolveSpeakerPublicBaseUrl();
+  if (publicBaseUrl && audioPath) {
     const fileName = path.basename(audioPath);
     // 公司端复用既有 SESSION_SIGNATURE 作为兼容密钥，并以 PURPOSE 做 HMAC 域隔离；
     // 后续可单独配置 AIT_AUDIO_URL_SIGNING_SECRET，无需变更调用方。
@@ -38,11 +52,11 @@ export function getSpeakerAudioUrl(audioPath, wav, meetingId) {
     });
     if (access) {
       const params = new URLSearchParams({ expires: String(access.expiresAt), signature: access.signature });
-      return `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${encodeURIComponent(fileName)}?${params}`;
+      return `${publicBaseUrl}/api/audio/${encodeURIComponent(fileName)}?${params}`;
     }
     // 公网端本来就是公开音频路由，未配置签名密钥时保留原 URL 行为，
     // 不能因为公司端的权限修复让大于 data URL 上限的窗口失去分离能力。
-    return `${AIT_PUBLIC_BASE_URL.replace(/\/$/, "")}/api/audio/${encodeURIComponent(fileName)}`;
+    return `${publicBaseUrl}/api/audio/${encodeURIComponent(fileName)}`;
   }
   if (!wav?.length || wav.length > 2_000_000) return "";
   return `data:audio/wav;base64,${wav.toString("base64")}`;

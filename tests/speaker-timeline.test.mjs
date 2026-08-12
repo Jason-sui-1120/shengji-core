@@ -14,6 +14,10 @@ const speakersModuleUrl = existsSync(new URL("../modules/speakers.mjs", import.m
   ? new URL("../modules/speakers.mjs", import.meta.url)
   : new URL("./speakers.mjs", import.meta.url);
 const { normalizeDiarizationSegments } = await import(speakersModuleUrl);
+const speakerCoreModuleUrl = existsSync(new URL("../modules/speaker-core.mjs", import.meta.url))
+  ? new URL("../modules/speaker-core.mjs", import.meta.url)
+  : new URL("./speaker-core.mjs", import.meta.url);
+const { resolveSpeakerPublicBaseUrl } = await import(speakerCoreModuleUrl);
 const audioSignatureModuleUrl = existsSync(new URL("../modules/audio-access-signature.mjs", import.meta.url))
   ? new URL("../modules/audio-access-signature.mjs", import.meta.url)
   : new URL("./audio-access-signature.mjs", import.meta.url);
@@ -32,6 +36,11 @@ test("滚动音频签名只允许当前会议、当前文件且会过期", () =>
   assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 78, fileName, now, ...access }), false);
   assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 77, fileName: "meeting-77-rolling-other.wav", now, ...access }), false);
   assert.equal(verifyRollingAudioAccessQuery({ secret, meetingId: 77, fileName, now: access.expiresAt + 1, ...access }), false);
+});
+
+test("说话人回源域名未单独配置时复用应用 PUBLIC_BASE_URL", () => {
+  assert.equal(resolveSpeakerPublicBaseUrl("", "https://voice.example.com/"), "https://voice.example.com");
+  assert.equal(resolveSpeakerPublicBaseUrl("https://audio.example.com/", "https://voice.example.com"), "https://audio.example.com");
 });
 
 test("0 基分离标签不能把 speaker_0 与 speaker_1 合并成同一人", () => {

@@ -8,6 +8,23 @@ import {
   AIT_SPEAKER_EMBEDDING_ENDPOINT, AIT_SPEAKER_DIARIZATION_ENDPOINT,
 } from "./config.mjs";
 
+function getRequestId(response) {
+  return response?.headers?.get?.("x-request-id")
+    || response?.headers?.get?.("x-bella-request-id")
+    || response?.headers?.get?.("x-bella-trace-id")
+    || response?.headers?.get?.("trace-id")
+    || "";
+}
+
+async function toSpeakerResponse(response) {
+  return {
+    ok: response.ok,
+    status: response.status,
+    requestId: getRequestId(response),
+    text: await response.text(),
+  };
+}
+
 export async function directSpeakerEmbedding(body) {
   if (!process.env.AIT_API_KEY) {
     return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
@@ -20,11 +37,7 @@ export async function directSpeakerEmbedding(body) {
     },
     body: JSON.stringify(body),
   });
-  return {
-    ok: response.ok,
-    status: response.status,
-    text: await response.text(),
-  };
+  return toSpeakerResponse(response);
 }
 
 export async function callSpeakerEmbedding(body) {
@@ -37,32 +50,33 @@ export async function callSpeakerEmbedding(body) {
       },
       body: JSON.stringify(body),
     });
-    return {
-      ok: response.ok,
-      status: response.status,
-      text: await response.text(),
-    };
+    return toSpeakerResponse(response);
   }
   return directSpeakerEmbedding(body);
 }
 
-export async function directSpeakerDiarization(body) {
+export async function directSpeakerDiarization(body, timeoutMs = 120_000) {
   if (!process.env.AIT_API_KEY) {
     return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
   }
-  const response = await fetch(`${BELLA_API_BASE_URL}${AIT_SPEAKER_DIARIZATION_ENDPOINT}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${process.env.AIT_API_KEY}`,
-    },
-    body: JSON.stringify(body),
-  });
-  return {
-    ok: response.ok,
-    status: response.status,
-    text: await response.text(),
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${BELLA_API_BASE_URL}${AIT_SPEAKER_DIARIZATION_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${process.env.AIT_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    return toSpeakerResponse(response);
+  } catch (error) {
+    return { ok: false, status: 0, requestId: "", text: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function callSpeakerDiarization(body, timeoutMs = 120_000) {
@@ -79,16 +93,12 @@ export async function callSpeakerDiarization(body, timeoutMs = 120_000) {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      return {
-        ok: response.ok,
-        status: response.status,
-        text: await response.text(),
-      };
+      return toSpeakerResponse(response);
     } catch (error) {
       return { ok: false, status: 0, text: error instanceof Error ? error.message : String(error) };
     } finally {
       clearTimeout(timer);
     }
   }
-  return directSpeakerDiarization(body);
+  return directSpeakerDiarization(body, timeoutMs);
 }

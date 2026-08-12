@@ -33,6 +33,25 @@ const meetingSpeakerTrackManager = createMeetingSpeakerTrackManager({
   candidatePromoteCount: SPEAKER_CANDIDATE_PROMOTE_COUNT,
 });
 
+function summarizeSpeakerFailure(response, fallback = "unknown") {
+  const status = Number(response?.status || 0);
+  const requestId = String(response?.requestId || "").trim();
+  let detail = fallback;
+  try {
+    const payload = JSON.parse(String(response?.text || ""));
+    detail = String(payload?.error?.message || payload?.error || payload?.message || payload?.code || fallback);
+  } catch {
+    detail = String(response?.text || fallback);
+  }
+  const safeDetail = detail
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:signature|token|api[_-]?key)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .slice(0, 180);
+  return `status=${status || "network"}${requestId ? ` requestId=${requestId}` : ""} detail=${safeDetail}`;
+}
+
 export async function identifySpeakerFromAudio({ meetingId, wav, audioPath, fallbackSpeaker = "" }) {
   if (!wav?.length) return null;
 
@@ -48,22 +67,41 @@ export async function identifySpeakerFromAudio({ meetingId, wav, audioPath, fall
 }
 
 export async function diarizeSpeakerSegments({ meetingId, wav, audioPath, timeoutMs }) {
-  if (!hasAiAccess() || !wav?.length) return [];
+  if (!hasAiAccess() || !wav?.length) {
+    console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} skipped reason=${!hasAiAccess() ? "ai_access_unavailable" : "audio_empty"}`);
+    return [];
+  }
   const audioUrl = getSpeakerAudioUrl(audioPath, wav, meetingId);
-  if (!/^(https?:\/\/|data:audio\/wav;base64,)/i.test(audioUrl)) return [];
+  if (!/^(https?:\/\/|data:audio\/wav;base64,)/i.test(audioUrl)) {
+    console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} skipped reason=audio_url_unavailable bytes=${Number(wav?.length || 0)} audioPath=${audioPath ? "present" : "missing"}`);
+    return [];
+  }
   try {
     const response = await callSpeakerDiarization({
       model: AIT_SPEAKER_DIARIZATION_MODEL,
       user: `voice-notes-meeting-${Number(meetingId || 1)}`,
       url: audioUrl,
+      language: "zh",
+      enable_words: true,
       speaker_diarization: true,
       embedding_model: AIT_SPEAKER_EMBEDDING_MODEL,
     }, timeoutMs);
-    if (!response.ok) return [];
+    if (!response.ok) {
+      console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} failed ${summarizeSpeakerFailure(response)}`);
+      return [];
+    }
     const payload = JSON.parse(response.text);
-    if (payload?.error) return [];
-    return normalizeDiarizationSegments(payload, meetingId, getWavDurationSeconds(wav));
-  } catch {
+    if (payload?.error) {
+      console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} failed ${summarizeSpeakerFailure({ ...response, text: JSON.stringify(payload) }, "payload_error")}`);
+      return [];
+    }
+    const segments = normalizeDiarizationSegments(payload, meetingId, getWavDurationSeconds(wav));
+    if (!segments.length) {
+      console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} empty status=${Number(response.status || 200)} requestId=${String(response.requestId || "-")}`);
+    }
+    return segments;
+  } catch (error) {
+    console.warn(`[speaker-diarization] meeting=${Number(meetingId || 0)} exception=${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }
@@ -227,19 +265,29 @@ export async function extractSpeakerEmbedding(wav, meetingId) {
       normalize: true,
       sample_rate: 16000,
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} failed ${summarizeSpeakerFailure(response)}`);
+      return null;
+    }
     const payload = JSON.parse(response.text);
-    if (payload?.error) return null;
+    if (payload?.error) {
+      console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} failed ${summarizeSpeakerFailure({ ...response, text: JSON.stringify(payload) }, "payload_error")}`);
+      return null;
+    }
     const embeddings = Array.isArray(payload?.embeddings) ? payload.embeddings : [];
     const best = embeddings
       .filter((item) => Array.isArray(item?.embedding) && item.embedding.length)
       .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
-    if (!best) return null;
+    if (!best) {
+      console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} empty status=${Number(response.status || 200)} requestId=${String(response.requestId || "-")}`);
+      return null;
+    }
     return {
       embedding: normalizeVector(best.embedding.map(Number)),
       confidence: Number(best.confidence || 0),
     };
-  } catch {
+  } catch (error) {
+    console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} exception=${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }
