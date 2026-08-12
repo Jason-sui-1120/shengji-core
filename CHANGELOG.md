@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.16.5 - 2026-08-12
+
+- 修复说话人分离/声纹直连绕过统一配置层、只读取 `process.env.AIT_API_KEY` 的问题；公司端通过平台 `config.json` 注入密钥时不再出现文件 ASR 正常但说话人链路误判无凭证。
+- CampPlus 分离请求显式携带 `language=zh` 与 `enable_words=true`，并补充 Bella TraceID 采集；错误详情会脱敏 URL、签名和令牌后再记录。
+
 ## 1.16.4 - 2026-08-12
 
 - 修复公司端只配置 `PUBLIC_BASE_URL` 时，超过 2MB 的滚动 WAV 在调用说话人分离模型前因缺少 `AIT_PUBLIC_BASE_URL` 被静默丢弃的问题；说话人回源默认复用应用公网地址，只有显式配置时才使用独立 AIT 回源域名。

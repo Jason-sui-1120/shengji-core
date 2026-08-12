@@ -5,6 +5,7 @@
 import { toGatewayHttpUrl, getGatewayHeaders } from "./http-utils.mjs";
 import {
   AI_GATEWAY_BASE_URL, BELLA_API_BASE_URL,
+  AIT_API_KEY,
   AIT_SPEAKER_EMBEDDING_ENDPOINT, AIT_SPEAKER_DIARIZATION_ENDPOINT,
 } from "./config.mjs";
 
@@ -25,15 +26,19 @@ async function toSpeakerResponse(response) {
   };
 }
 
+export function buildAitAuthorizationHeaders(apiKey = AIT_API_KEY) {
+  return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+}
+
 export async function directSpeakerEmbedding(body) {
-  if (!process.env.AIT_API_KEY) {
+  if (!AIT_API_KEY) {
     return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
   }
   const response = await fetch(`${BELLA_API_BASE_URL}${AIT_SPEAKER_EMBEDDING_ENDPOINT}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${process.env.AIT_API_KEY}`,
+      ...buildAitAuthorizationHeaders(),
     },
     body: JSON.stringify(body),
   });
@@ -56,7 +61,7 @@ export async function callSpeakerEmbedding(body) {
 }
 
 export async function directSpeakerDiarization(body, timeoutMs = 120_000) {
-  if (!process.env.AIT_API_KEY) {
+  if (!AIT_API_KEY) {
     return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
   }
   const controller = new AbortController();
@@ -66,7 +71,7 @@ export async function directSpeakerDiarization(body, timeoutMs = 120_000) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${process.env.AIT_API_KEY}`,
+        ...buildAitAuthorizationHeaders(),
       },
       body: JSON.stringify(body),
       signal: controller.signal,

@@ -18,6 +18,10 @@ const speakerCoreModuleUrl = existsSync(new URL("../modules/speaker-core.mjs", i
   ? new URL("../modules/speaker-core.mjs", import.meta.url)
   : new URL("./speaker-core.mjs", import.meta.url);
 const { resolveSpeakerPublicBaseUrl } = await import(speakerCoreModuleUrl);
+const speakerGatewayModuleUrl = existsSync(new URL("../modules/speaker-gateway.mjs", import.meta.url))
+  ? new URL("../modules/speaker-gateway.mjs", import.meta.url)
+  : new URL("./speaker-gateway.mjs", import.meta.url);
+const { buildAitAuthorizationHeaders } = await import(speakerGatewayModuleUrl);
 const audioSignatureModuleUrl = existsSync(new URL("../modules/audio-access-signature.mjs", import.meta.url))
   ? new URL("../modules/audio-access-signature.mjs", import.meta.url)
   : new URL("./audio-access-signature.mjs", import.meta.url);
@@ -41,6 +45,13 @@ test("滚动音频签名只允许当前会议、当前文件且会过期", () =>
 test("说话人回源域名未单独配置时复用应用 PUBLIC_BASE_URL", () => {
   assert.equal(resolveSpeakerPublicBaseUrl("", "https://voice.example.com/"), "https://voice.example.com");
   assert.equal(resolveSpeakerPublicBaseUrl("https://audio.example.com/", "https://voice.example.com"), "https://audio.example.com");
+});
+
+test("说话人直连鉴权使用统一配置值而不是绕过配置层读取进程变量", () => {
+  assert.deepEqual(buildAitAuthorizationHeaders("configured-key"), {
+    authorization: "Bearer configured-key",
+  });
+  assert.deepEqual(buildAitAuthorizationHeaders(""), {});
 });
 
 test("0 基分离标签不能把 speaker_0 与 speaker_1 合并成同一人", () => {
