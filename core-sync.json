@@ -1,6 +1,6 @@
 {
-  "version": "1.15.3",
-  "releasedAt": "2026-08-10",
+  "version": "1.16.0",
+  "releasedAt": "2026-08-11",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
     {
@@ -69,7 +69,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "9f4018792e0c8749ed2616e957fbfd5cbb897949b9a362d81a0027ae35f8920b"
+      "sha256": "7865da6728a88d9360ff3f3473e11130dea60c6dec441bef22a1cf27b404eae0"
     },
     {
       "file": "model-routing.mjs",
@@ -85,11 +85,15 @@
     },
     {
       "file": "rolling-transcript-service.mjs",
-      "sha256": "685a92bf99bfd45c64f99b6cce5cc15051155d2292e3ecdf948b9afcff971544"
+      "sha256": "c9bd92aaeedafc444cc1f3843a99e89a5baf62ba3f87b38943d6e860709610d7"
     },
     {
       "file": "rolling-window-plan.mjs",
       "sha256": "1f157996bb4efbfb08d5024670949cef23f1a43ba5690beaff1dd18044e137d9"
+    },
+    {
+      "file": "meeting-speaker-track-manager.mjs",
+      "sha256": "ec68b67e3ab5037d770cb3c587ce8aeb10a58e3a8c918f90d0f1cd58210c9b88"
     },
     {
       "file": "speaker-core.mjs",
@@ -109,7 +113,7 @@
     },
     {
       "file": "speakers.mjs",
-      "sha256": "5d62ea20513ac3af50095c5c949bf61223658bf92642c8a323772bd3b67c791f"
+      "sha256": "209a86752c063e4ca6bcf97d22107c44fc890594f60309a90f8d7bb237a6698d"
     },
     {
       "file": "tail-stabilization.mjs",
@@ -133,7 +137,7 @@
     },
     {
       "file": "voice-cluster-service.mjs",
-      "sha256": "3a4970cf2890584f5ef264cd78e00997442e5fbcb454f5523d811d8877f9d80a"
+      "sha256": "020bd9c21c18e9e00955cdb53d6b3cb6f194d5c060ef81bcf60ed84e0c3f5afc"
     },
     {
       "file": "voice-cluster-store.mjs",
@@ -235,15 +239,19 @@
     },
     {
       "file": "live-asr-session.test.mjs",
-      "sha256": "23e8198e96ae8e4bbc244865bead6893ebda8d9c9f283a24bbe30a255da6a3f9"
+      "sha256": "19c2115a00cac68da7fab6c85c5a509adf32ba01cd544f1c4badc7f0a1047e87"
     },
     {
       "file": "model-routing.test.mjs",
       "sha256": "7f8688fa2b23119a1e19f80903abfa27e7830ca2365b7948653a40c31bc326f2"
     },
     {
+      "file": "meeting-speaker-track-manager.test.mjs",
+      "sha256": "c257d66f112dbbbfa38ffc6c71ce24fc607803a2092682ee4c6b51762de8fcdd"
+    },
+    {
       "file": "rolling-service-consistency.test.mjs",
-      "sha256": "5c0c5864075c541e1b9a990b3ba22a18648ab1aab2d8967ec7286694a3913c8b"
+      "sha256": "c31e691c2ae99720d2fd63591e7a0987237f087dfbf5777ff2dc6a771624ea9b"
     },
     {
       "file": "rolling-window-plan.test.mjs",
@@ -375,15 +383,15 @@
     },
     {
       "file": "ARCHITECTURE.md",
-      "sha256": "e8c764f538b9dbbf69713e9f54f94e2af2b3ab91f1738cb68c7b7e9370ab6214"
+      "sha256": "6aee20d2e371bb2c9320a3584af02510e5f318f30bdd301f8089c2bdaf7641e5"
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "53dc329a07c8154f24129f4ea0dd7291b9f2fd9794de6798d679efaf85483284"
+      "sha256": "a0bb6eb4ecf12630e5526027fbb626d87efefbf0f48da734b4e425c651a9dde7"
     },
     {
       "file": "README.md",
-      "sha256": "ffa26c460414db90382731230c54e8bc4b4e664529410d0e1c5f2b0ff9a5e6b4"
+      "sha256": "3ae72103f9ea2415296ed30e4c9bc67e8cf045543a832825bf30ae8a684090e4"
     },
     {
       "file": "design-qa.md",

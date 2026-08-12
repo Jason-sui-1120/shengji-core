@@ -140,6 +140,9 @@ export class RollingTranscriptService {
     this.diarizeSpeakerSegments = typeof aiCalls.diarizeSpeakerSegments === "function"
       ? aiCalls.diarizeSpeakerSegments
       : null;
+    this.resolveDiarizedSpeakerTracks = typeof aiCalls.resolveDiarizedSpeakerTracks === "function"
+      ? aiCalls.resolveDiarizedSpeakerTracks
+      : null;
     // 旧链路副作用注入（快照刷新/自动分析调度），切换生产时由调用方提供。
     // 默认空操作（不阻塞服务自身逻辑，也不强依赖 index.mjs）。
     this.afterStableCorrection = typeof aiCalls.afterStableCorrection === "function"
@@ -601,8 +604,8 @@ export class RollingTranscriptService {
 
   /**
    * 对已落库的稳定窗口做轻量说话人回填。
-   * 不创建新画像、不做跨窗猜测：分离模型给出的会议内轨道直接写为“说话人 N”；
-   * 只有具备至少 200ms 时间重叠的行才更新，人工编辑永远由 store 保护。
+   * 文件分离模型的 speaker_0/1 只在当前窗口有效，必须先经会议级声纹轨道管理器
+   * 映射成全会身份；只有具备至少 200ms 时间重叠的行才更新，人工编辑永远由 store 保护。
    */
   async enrichStableWindowSpeakers({
     meetingId,
@@ -613,7 +616,7 @@ export class RollingTranscriptService {
     centerStartAudioMs,
     centerEndAudioMs,
   }) {
-    if (!this.diarizeSpeakerSegments || !Array.isArray(insertedRows) || !insertedRows.length || !wav?.length) {
+    if (!this.diarizeSpeakerSegments || !this.resolveDiarizedSpeakerTracks || !Array.isArray(insertedRows) || !insertedRows.length || !wav?.length) {
       return { ok: false, reason: "speaker_enrichment_unavailable" };
     }
     const diarizationSegments = await this.diarizeSpeakerSegments({
@@ -625,7 +628,26 @@ export class RollingTranscriptService {
     if (!Array.isArray(diarizationSegments) || !diarizationSegments.length) {
       return { ok: false, reason: "diarization_empty" };
     }
-    const absoluteSegments = buildAbsoluteSpeakerSegments(diarizationSegments, {
+    const trackAssignments = await this.resolveDiarizedSpeakerTracks({
+      meetingId,
+      wav,
+      segments: diarizationSegments,
+    });
+    const globalByLocal = new Map((Array.isArray(trackAssignments) ? trackAssignments : [])
+      .filter((item) => item?.status === "confirmed" && item?.speaker && item.speaker !== "待识别")
+      .map((item) => [String(item.key), item]));
+    if (!globalByLocal.size) return { ok: false, reason: "speaker_tracks_unconfirmed" };
+    const resolvedSegments = diarizationSegments
+      .map((segment) => {
+        const resolved = globalByLocal.get(String(segment?.speaker || ""));
+        return resolved ? {
+          ...segment,
+          speaker: resolved.speaker,
+          confidence: Math.max(Number(segment.confidence || 0), Number(resolved.confidence || 0)),
+        } : null;
+      })
+      .filter(Boolean);
+    const absoluteSegments = buildAbsoluteSpeakerSegments(resolvedSegments, {
       windowStartMs: windowStartAudioMs,
       centerStartMs: centerStartAudioMs,
       centerEndMs: centerEndAudioMs,

@@ -390,6 +390,9 @@ test("部分时间对齐必须整体替换稳定窗口，不能遗留实时残�
 
 test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟落为草稿", async () => {
   const inserted = [];
+  const speakerUpdates = [];
+  let resolveSpeaker;
+  const speakerResult = new Promise((resolve) => { resolveSpeaker = resolve; });
   const realtimeClient = {
     readyState: FakeSocket.OPEN,
     sent: [],
@@ -434,14 +437,17 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟
     removeFillerWords: (text) => text,
     mergeTranscriptText: (previous, next) => `${previous}${next}`,
     applyGlossaryAliasCorrections: (text) => text,
-    analyzePcmQuality: () => ({ durationMs: 0 }),
+    analyzePcmQuality: (chunks) => ({
+      durationMs: Math.round(chunks.reduce((sum, chunk) => sum + Number(chunk?.length || 0), 0) / 32),
+    }),
     // 草稿路径不再依赖这些重型步骤；一旦回归到关键路径，测试应立即失败。
     savePcmAsWav: () => { throw new Error("草稿不得写分段 WAV"); },
-    buildTranscriptLineDrafts: ({ text, audioStartMs, audioEndMs }) => [{
+    buildTranscriptLineDrafts: ({ text, audioStartMs, audioEndMs, fallbackSpeaker }) => [{
       id: 8801,
       time: "00:00",
       text,
-      speaker: "待识别",
+      speaker: fallbackSpeaker.speaker,
+      speakerSource: fallbackSpeaker.source,
       audioStartMs,
       audioEndMs,
       stabilityStatus: "draft",
@@ -450,7 +456,11 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟
     shouldFlushTranscriptBuffer: () => false,
     looksSemanticallyIncomplete: () => false,
     shouldWaitForMoreSpeech: () => false,
-    identifySpeakerFromAudio: () => { throw new Error("草稿不得等待实时声纹"); },
+    identifySpeakerFromAudio: () => speakerResult,
+    updateTranscriptSpeakerAuto: async (id, speaker, confidence, source) => {
+      speakerUpdates.push({ id, speaker, confidence, source });
+      return { ...inserted.find((line) => line.id === id), speaker, speakerConfidence: confidence, speakerSource: source };
+    },
     diarizeSpeakerSegments: () => { throw new Error("草稿不得等待实时分离"); },
     correctTranscriptText: () => { throw new Error("草稿不得等待实时 LLM"); },
     scheduleServerAutoAnalyze: () => {},
@@ -461,6 +471,10 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟
 
   const upstream = FakeSocket.instances.at(beforeSocketCount);
   upstream.emit("open");
+  upstream.emit("message", JSON.stringify({ header: { name: "TranscriptionStarted" }, payload: {} }), false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // 1.2 秒 PCM 足以触发后台声纹，但不得阻塞 SentenceEnd 草稿落库。
+  realtimeClient.handlers.get("message")(Buffer.alloc(38_400, 1), true);
   await new Promise((resolve) => setTimeout(resolve, 0));
   // 不发送 vad.speech_start / vad.endpoint，直接模拟上游已经确认句末。
   const sentenceEndAt = Date.now();
@@ -475,11 +489,20 @@ test("SentenceEnd 即使没有浏览器 VAD endpoint 也必须独立、低延迟
   assert.equal(inserted.length, 1);
   assert.ok(Date.now() - sentenceEndAt < 150, "确认句末不应被慢词库或后台 AI 阻塞");
   assert.equal(inserted[0].text, "这条确认句末必须进入草稿列表。");
+  assert.equal(inserted[0].speaker, "说话人 1", "首条草稿应立即落到暂定会议轨道，不能长时间显示待识别");
+  assert.equal(speakerUpdates.length, 0, "声纹未返回时草稿已经可见，不能等待后台识别");
   assert.ok(realtimeClient.sent.some((item) => {
     const message = JSON.parse(item);
     return message.type === "transcript.final" && message.line?.text === "这条确认句末必须进入草稿列表。";
   }));
   assert.equal(realtimeClient.sent.some((item) => JSON.parse(item).type === "transcript.realtime_segment"), false);
+  resolveSpeaker({ speaker: "说话人 2", confidence: 86, source: "embedding", speakerStatus: "confirmed" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(speakerUpdates, [{ id: 8801, speaker: "说话人 2", confidence: 86, source: "embedding" }]);
+  assert.ok(realtimeClient.sent.some((item) => {
+    const message = JSON.parse(item);
+    return message.type === "transcript.final" && message.line?.id === 8801 && message.line?.speaker === "说话人 2";
+  }), "声纹完成后应复用同一 transcript id 原位纠正，而不是新增一行");
   realtimeClient.handlers.get("close")();
 });
 

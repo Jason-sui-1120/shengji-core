@@ -5,6 +5,7 @@
  *
  * 通过 deps 注入端侧差异（DB 方言/鉴权/配置/存储），业务逻辑两端统一。
  */
+import { wrapPcm16AsWav } from "./audio-utils.mjs";
 
 /**
  * 计算上游重连策略。
@@ -267,6 +268,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
   let lastPartialFlushText = "";
   let lastPartialFlushAudioStartMs = 0;
   let lastFlushedTranscript = null; // { text, audioStartMs, audioEndMs, reason }——仅压制上游的近似重发
+  // 用户可见草稿不能长时间停在“待识别”。上游流式 ASR 不提供可靠 speaker，
+  // 因此先沿用当前会议轨道（首条为说话人 1），声纹在落库后异步纠正。
+  let currentProvisionalSpeaker = "说话人 1";
+  let lastSpeakerIdentifyAudioMs = Number.NEGATIVE_INFINITY;
+  let speakerEnrichmentChain = Promise.resolve();
   let speechAudioChunks = [];
   let speechAudioBytes = 0;
   // P0：真实语音 PCM 字节数（自适应 VAD 后）——asr_no_first_result 定时器只在有真实语音时启动
@@ -1638,7 +1644,11 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       meetingId,
       startedAt,
       text: correctedText,
-      fallbackSpeaker: null,
+      fallbackSpeaker: {
+        speaker: currentProvisionalSpeaker,
+        source: "realtime_provisional",
+        confidence: 20,
+      },
       audioPath: "",
       wav: null,
       diarizationSegments: [],
@@ -1696,6 +1706,52 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       // 稳定稿以数据库的原子中心区间替换为准，前端下一次 state 刷新直接反映该结果。
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line }));
       if (line.stabilityStatus === "stable") deps.scheduleServerAutoAnalyze(meetingId, line.stableRevision);
+    }
+    // 声纹识别绝不能回到草稿关键路径。按配置间隔抽取一条足够长的句子，
+    // 串行交给会议级轨道管理器；识别完成后以同一个 transcript id 原位更新。
+    const identifyIntervalMs = Math.max(2_000, Number(config.LIVE_SPEAKER_IDENTIFY_INTERVAL_MS || 12_000));
+    const shouldIdentifySpeaker = Boolean(
+      typeof deps.identifySpeakerFromAudio === "function"
+      && typeof deps.updateTranscriptSpeakerAuto === "function"
+      && insertedLines.length
+      && currentAudioChunks.some((chunk) => Buffer.isBuffer(chunk) && chunk.length)
+      && audioEndMs - audioStartMs >= 1_200
+      && audioEndMs - lastSpeakerIdentifyAudioMs >= identifyIntervalMs
+    );
+    if (shouldIdentifySpeaker) {
+      lastSpeakerIdentifyAudioMs = audioEndMs;
+      const pcm = Buffer.concat(currentAudioChunks.filter((chunk) => Buffer.isBuffer(chunk) && chunk.length));
+      const transcriptIds = insertedLines.map((line) => Number(line.id || 0)).filter((id) => id > 0);
+      const fallbackSpeaker = currentProvisionalSpeaker;
+      speakerEnrichmentChain = speakerEnrichmentChain
+        .catch(() => undefined)
+        .then(async () => {
+          const result = await deps.identifySpeakerFromAudio({
+            meetingId,
+            wav: wrapPcm16AsWav(pcm, 16000),
+            audioPath: "",
+            fallbackSpeaker,
+          });
+          if (!result?.speaker || result.speaker === "待识别") return;
+          currentProvisionalSpeaker = result.speaker;
+          let updatedCount = 0;
+          for (const id of transcriptIds) {
+            const updated = await deps.updateTranscriptSpeakerAuto(
+              id,
+              result.speaker,
+              result.confidence,
+              result.source || "embedding",
+            );
+            if (!updated) continue;
+            updatedCount += 1;
+            // 复用 transcript.final 的按 id 替换语义，不增加新的前端事件协议。
+            if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: "transcript.final", line: updated }));
+          }
+          safeSend({ type: "status", status: "realtime_speaker_enrichment_complete", updatedCount });
+        })
+        .catch((error) => {
+          console.warn(`[speaker/realtime] meeting=${meetingId} failed: ${error instanceof Error ? error.message : error}`);
+        });
     }
     safeSend({
       type: "status",

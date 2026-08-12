@@ -19,6 +19,9 @@ export class VoiceClusterService {
   constructor(store, aiCalls = {}) {
     this.store = store;
     this.extractSpeakerEmbedding = aiCalls.extractSpeakerEmbedding;
+    this.resolveMeetingSpeakerTracks = typeof aiCalls.resolveMeetingSpeakerTracks === "function"
+      ? aiCalls.resolveMeetingSpeakerTracks
+      : null;
     // 旧链路副作用注入（快照刷新/自动分析调度），默认空操作。
     this.afterVoiceCluster = typeof aiCalls.afterVoiceCluster === "function"
       ? aiCalls.afterVoiceCluster
@@ -146,10 +149,29 @@ export class VoiceClusterService {
       if (!clusterFirstSeen.has(effectiveCluster)) clusterFirstSeen.set(effectiveCluster, a.startSeconds);
     }
     const orderedClusters = [...clusterFirstSeen.entries()].sort((a, b) => a[1] - b[1]);
-    const labelByCluster = new Map();
-    orderedClusters.forEach(([clusterId], index) => {
-      labelByCluster.set(clusterId, `说话人 ${index + 1}`);
+    if (!this.resolveMeetingSpeakerTracks) {
+      return { ok: false, meetingId: key, reason: "speaker_track_manager_unavailable" };
+    }
+    const trackAssignments = await this.resolveMeetingSpeakerTracks({
+      meetingId: key,
+      confirmNewTracks: true,
+      observations: orderedClusters.map(([clusterId, firstSeen]) => {
+        const stat = clusterStats.get(clusterId) || { seconds: 0, count: 1 };
+        return {
+          key: String(clusterId),
+          embedding: clusterCentroid.get(clusterId) || [],
+          durationMs: Math.round(Number(stat.seconds || 0) * 1000),
+          evidenceCount: Number(stat.count || 1),
+          startMs: Math.round(Number(firstSeen || 0) * 1000),
+          source: "post_meeting_voice_cluster",
+          confirmNewTrack: true,
+        };
+      }),
     });
+    const labelByCluster = new Map((Array.isArray(trackAssignments) ? trackAssignments : [])
+      .filter((item) => item?.status === "confirmed" && item?.speaker && item.speaker !== "待识别")
+      .map((item) => [String(item.key), item.speaker]));
+    if (!labelByCluster.size) return { ok: false, meetingId: key, reason: "speaker_tracks_unconfirmed" };
 
     // 6. 生成轮次
     const finalAccepted = accepted.filter((a) => a.accepted && a.clusterId !== "unknown");

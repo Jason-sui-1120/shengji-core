@@ -200,6 +200,12 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
         { speaker: "说话人 2", start: 10, end: 12, confidence: 91 },
       ];
     },
+    async resolveDiarizedSpeakerTracks() {
+      return [
+        { key: "说话人 1", speaker: "说话人 4", confidence: 93, status: "confirmed" },
+        { key: "说话人 2", speaker: "说话人 2", confidence: 94, status: "confirmed" },
+      ];
+    },
     async afterStableCorrection(meetingId, stableRevision) {
       stableRevisions.push({ meetingId, stableRevision });
     },
@@ -225,8 +231,8 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
     payload: {
       transcriptIds: [501, 502],
       assignments: [
-        { id: 501, speaker: "说话人 1", confidence: 88 },
-        { id: 502, speaker: "说话人 2", confidence: 91 },
+        { id: 501, speaker: "说话人 4", confidence: 93 },
+        { id: 502, speaker: "说话人 2", confidence: 94 },
       ],
       splitPlans: [],
     },

@@ -7,23 +7,44 @@ import {
   SPEAKER_EMBEDDING_THRESHOLD, SPEAKER_CANDIDATE_THRESHOLD,
   SPEAKER_CANDIDATE_PROMOTE_COUNT, SPEAKER_DIARIZATION_MIN_SEGMENT_SECONDS,
 } from "./config.mjs";
-import { normalizeVector, cosineSimilarity, mergeEmbeddingVector, matchEmbeddingProfile, safeParseJson } from "./speaker-utils.mjs";
+import { safeParseJson } from "./speaker-utils.mjs";
 import { hasAiAccess, getSpeakerAudioUrl, normalizeDiarizationTime, normalizeConfidence } from "./speaker-core.mjs";
 import { extractVoiceFeatures, getFeatureDistance, mergeVoiceFeatures } from "./voice-features.mjs";
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
-import { getWavDurationSeconds } from "./audio-utils.mjs";
+import { getWavDurationSeconds, sliceWavBySeconds } from "./audio-utils.mjs";
 import { callSpeakerEmbedding, callSpeakerDiarization } from "./speaker-gateway.mjs";
+import { createMeetingSpeakerTrackManager } from "./meeting-speaker-track-manager.mjs";
 import {
   listProfiles, insertProfile, bumpProfileFeatures, setProfileFeatures,
-  renameProfileLabel, getNextSpeakerLabel,
+  deleteProfileById, renameProfileLabel, getNextSpeakerLabel,
 } from "./speaker-store.mjs";
 
-export async function identifySpeakerFromAudio({ meetingId, wav, audioPath }) {
+const meetingSpeakerTrackManager = createMeetingSpeakerTrackManager({
+  listProfiles,
+  insertProfile,
+  bumpProfileFeatures,
+  setProfileFeatures,
+  deleteProfileById,
+  renameProfileLabel,
+  getNextSpeakerLabel,
+}, {
+  matchThreshold: SPEAKER_EMBEDDING_THRESHOLD,
+  candidateThreshold: SPEAKER_CANDIDATE_THRESHOLD,
+  candidatePromoteCount: SPEAKER_CANDIDATE_PROMOTE_COUNT,
+});
+
+export async function identifySpeakerFromAudio({ meetingId, wav, audioPath, fallbackSpeaker = "" }) {
   if (!wav?.length) return null;
 
-  const embeddingResult = await identifySpeakerByEmbedding({ meetingId, wav });
+  const embeddingResult = await identifySpeakerByEmbedding({ meetingId, wav, fallbackSpeaker });
   if (embeddingResult) return embeddingResult;
-  return identifySpeakerByLocalProfile({ meetingId, wav });
+  // 网关短暂不可用时不能再启用另一套本地特征编号器，否则同一会议会出现
+  // “embedding 说话人”和“local 说话人”两套互不认识的轨道。保持当前暂定轨道，
+  // 等 45 秒窗口或会后聚类继续用统一管理器纠正。
+  const provisional = String(fallbackSpeaker || "").trim();
+  return provisional && provisional !== "待识别"
+    ? { speaker: provisional, confidence: 20, source: "realtime_provisional", speakerStatus: "provisional" }
+    : null;
 }
 
 export async function diarizeSpeakerSegments({ meetingId, wav, audioPath, timeoutMs }) {
@@ -127,99 +148,72 @@ export function normalizeDiarizationSegments(payload, meetingId, audioDurationSe
     .filter((segment) => segment.end - segment.start >= SPEAKER_DIARIZATION_MIN_SEGMENT_SECONDS);
 }
 
-export async function identifySpeakerByEmbedding({ meetingId, wav }) {
+export async function identifySpeakerByEmbedding({ meetingId, wav, fallbackSpeaker = "" }) {
   const embeddingResult = await extractSpeakerEmbedding(wav, meetingId);
   if (!embeddingResult?.embedding?.length) return null;
-
-  const speakerProfiles = (await listProfiles(null, meetingId)).map((row) => ({
-    ...row,
-    profile: safeParseJson(row.featuresJson),
-  }));
-  const profiles = speakerProfiles
-    .filter((row) => row.profile?.kind === "embedding" && Array.isArray(row.profile.vector));
-  const candidates = speakerProfiles
-    .filter((row) => row.profile?.kind === "embedding_candidate" && Array.isArray(row.profile.vector));
-
-  // 找出前两名最相似的 profile，计算 margin（第一名与第二名的相似度差）。
-  // 硬匹配 0.55 只看第一名，当 006-F 和 001-M 都 ~0.6 时会误归给最高分。
-  // 改为 margin 判断：前两名太接近（差 < 0.06）时说明"不可区分"，标待识别而非硬塞。
-  const ranked = [];
-  for (const profile of profiles) {
-    const similarity = cosineSimilarity(embeddingResult.embedding, profile.profile.vector);
-    ranked.push({ ...profile, similarity });
-  }
-  ranked.sort((a, b) => b.similarity - a.similarity);
-  const matched = ranked[0] || null;
-  const runnerUp = ranked[1] || null;
-  const margin = matched && runnerUp ? matched.similarity - runnerUp.similarity : (matched ? matched.similarity : 0);
-  const SPEAKER_MATCH_MIN_MARGIN = 0.06;
-
-  if (matched && matched.similarity >= SPEAKER_EMBEDDING_THRESHOLD) {
-    // 第一第二太接近 → 模糊不分配，不强行归人
-    if (runnerUp && runnerUp.similarity >= SPEAKER_EMBEDDING_THRESHOLD && margin < SPEAKER_MATCH_MIN_MARGIN) {
-      return null; // 待识别，交会后聚类归集
-    }
-    const merged = mergeEmbeddingVector(matched.profile.vector, embeddingResult.embedding, matched.sampleCount);
-    await bumpProfileFeatures(null, matched.id, JSON.stringify({ kind: "embedding", vector: merged }), new Date().toISOString());
-    return {
-      speaker: matched.label,
-      confidence: Math.max(55, Math.min(99, Math.round(matched.similarity * 100))),
-      source: "embedding",
-    };
-  }
-
-  if (profiles.length > 0) {
-    const candidate = matchEmbeddingProfile(candidates, embeddingResult.embedding);
-    if (candidate && candidate.similarity >= SPEAKER_CANDIDATE_THRESHOLD) {
-      const nextCount = Number(candidate.sampleCount || 1) + 1;
-      const merged = mergeEmbeddingVector(candidate.profile.vector, embeddingResult.embedding, candidate.sampleCount);
-      if (nextCount >= SPEAKER_CANDIDATE_PROMOTE_COUNT) {
-        const label = await getNextSpeakerLabel(null, meetingId);
-        await renameProfileLabel(null, meetingId, candidate.label, label, new Date().toISOString());
-        await setProfileFeatures(null, candidate.id, JSON.stringify({ kind: "embedding", vector: merged }), nextCount, new Date().toISOString());
-        return {
-          speaker: label,
-          confidence: Math.max(60, Math.min(92, Math.round(candidate.similarity * 100))),
-          source: "embedding",
-        };
-      }
-      await setProfileFeatures(null, candidate.id, JSON.stringify({ kind: "embedding_candidate", vector: merged }), nextCount, new Date().toISOString());
-      return {
-        speaker: "待识别",
-        confidence: Math.max(0, Math.min(54, Math.round(candidate.similarity * 100))),
-        source: "pending",
-      };
-    }
-
-    await insertProfile(
-      null,
-      meetingId,
-      `__candidate_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      JSON.stringify({ kind: "embedding_candidate", vector: normalizeVector(embeddingResult.embedding) }),
-      1,
-      new Date().toISOString(),
-    );
-    return {
-      speaker: "待识别",
-      confidence: Math.max(0, Math.min(54, Math.round((matched?.similarity || 0) * 100))),
-      source: "pending",
-    };
-  }
-
-  const label = await getNextSpeakerLabel(null, meetingId);
-  await insertProfile(
-    null,
+  const [resolved] = await meetingSpeakerTrackManager.resolveBatch({
     meetingId,
-    label,
-    JSON.stringify({ kind: "embedding", vector: normalizeVector(embeddingResult.embedding) }),
-    1,
-    new Date().toISOString(),
-  );
-  return {
-    speaker: label,
-    confidence: 65,
-    source: "embedding",
-  };
+    fallbackLabel: fallbackSpeaker,
+    observations: [{
+      key: `realtime-${Date.now()}`,
+      embedding: embeddingResult.embedding,
+      confidence: embeddingResult.confidence,
+      durationMs: Math.round(getWavDurationSeconds(wav) * 1000),
+      evidenceCount: 1,
+      source: "embedding",
+    }],
+  });
+  return resolved ? {
+    speaker: resolved.speaker,
+    confidence: resolved.confidence,
+    source: resolved.source,
+    speakerStatus: resolved.status,
+  } : null;
+}
+
+/**
+ * 把一个文件分离窗口里的临时 speaker_0/1 映射为会议级说话人轨道。
+ * 每条临时轨道仅抽取最长的连续语音片段做声纹，避免把多人片段拼在一起；
+ * 总发言时长和分段数只作为“是否足以创建新轨道”的证据强度。
+ */
+export async function resolveDiarizedSpeakerTracks({ meetingId, wav, segments = [], fallbackSpeaker = "" }) {
+  if (!wav?.length) return [];
+  const byLocalTrack = new Map();
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    const key = String(segment?.speaker || "").trim();
+    const start = Math.max(0, Number(segment?.start || 0));
+    const end = Math.max(start, Number(segment?.end || start));
+    if (!key || key === "待识别" || end <= start) continue;
+    const group = byLocalTrack.get(key) || { key, segments: [], durationMs: 0 };
+    group.segments.push({ start, end, confidence: Number(segment?.confidence || 0) });
+    group.durationMs += Math.round((end - start) * 1000);
+    byLocalTrack.set(key, group);
+  }
+
+  const observations = [];
+  for (const group of byLocalTrack.values()) {
+    const longest = group.segments.slice().sort((left, right) => (right.end - right.start) - (left.end - left.start))[0];
+    if (!longest || longest.end - longest.start < 0.8) continue;
+    const clip = sliceWavBySeconds(wav, longest.start, longest.end);
+    const embeddingResult = await extractSpeakerEmbedding(clip, meetingId);
+    if (!embeddingResult?.embedding?.length) continue;
+    observations.push({
+      key: group.key,
+      embedding: embeddingResult.embedding,
+      confidence: embeddingResult.confidence,
+      durationMs: group.durationMs,
+      evidenceCount: group.segments.length,
+      startMs: Math.round(longest.start * 1000),
+      source: "rolling_diarization",
+      confirmNewTrack: group.durationMs >= 4_000 && group.segments.length >= 2,
+    });
+  }
+  return meetingSpeakerTrackManager.resolveBatch({ meetingId, observations, fallbackLabel: fallbackSpeaker });
+}
+
+/** 会后聚类质心也必须复用同一个会议轨道，不再从说话人 1 重新编号。 */
+export async function resolveMeetingSpeakerTracks({ meetingId, observations = [], fallbackSpeaker = "", confirmNewTracks = false }) {
+  return meetingSpeakerTrackManager.resolveBatch({ meetingId, observations, fallbackLabel: fallbackSpeaker, confirmNewTracks });
 }
 
 export async function extractSpeakerEmbedding(wav, meetingId) {
