@@ -118,10 +118,50 @@ export function getUncommittedCumulativeText(committedText, candidateText) {
   const shorterLength = Math.min(left.text.length, right.text.length);
   let sharedPrefix = 0;
   while (sharedPrefix < shorterLength && left.text[sharedPrefix] === right.text[sharedPrefix]) sharedPrefix += 1;
-  const closePrefix = sharedPrefix >= 8 && sharedPrefix / shorterLength >= 0.8;
-  if (!closePrefix) return candidate;
-  if (right.text.length <= sharedPrefix) return "";
-  const rawCutIndex = Number(right.sourceIndexes[sharedPrefix - 1] ?? -1) + 1;
+  let committedThroughCandidateIndex = sharedPrefix - 1;
+  // 忽略标点后，候选完整包含全部已提交文本时可直接裁尾；只要已提交文本
+  // 尚未全部匹配，就必须继续走回改对齐，不能因为前 80% 相同而提前截断。
+  if (sharedPrefix < left.text.length) {
+    // 流式模型会回改累计快照中间的少量同音词，严格 startsWith 会把这种
+    // “旧前缀 + 新尾部”误判为全新句。用受限编辑距离把“全部已提交文字”
+    // 对齐到候选的最佳前缀；只在差异很小且开头锚点一致时裁尾，避免把
+    // 真正的新一句错当成旧句续写。实时 partial 通常不超过几百字，矩阵有明确上限。
+    const maxAlignmentChars = 320;
+    if (!left.text || !right.text || left.text.length > maxAlignmentChars || right.text.length > maxAlignmentChars) return candidate;
+    const anchorLength = Math.min(6, left.text.length, right.text.length);
+    const sameOpeningAnchor = anchorLength >= 4 && left.text.slice(0, anchorLength) === right.text.slice(0, anchorLength);
+    if (!sameOpeningAnchor) return candidate;
+    let previousRow = Uint16Array.from({ length: right.text.length + 1 }, (_, index) => index);
+    for (let leftIndex = 1; leftIndex <= left.text.length; leftIndex += 1) {
+      const currentRow = new Uint16Array(right.text.length + 1);
+      currentRow[0] = leftIndex;
+      for (let rightIndex = 1; rightIndex <= right.text.length; rightIndex += 1) {
+        const substitutionCost = left.text[leftIndex - 1] === right.text[rightIndex - 1] ? 0 : 1;
+        currentRow[rightIndex] = Math.min(
+          previousRow[rightIndex] + 1,
+          currentRow[rightIndex - 1] + 1,
+          previousRow[rightIndex - 1] + substitutionCost,
+        );
+      }
+      previousRow = currentRow;
+    }
+    const minCandidatePrefix = Math.max(anchorLength, Math.floor(left.text.length * 0.7));
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestCandidateLength = 0;
+    for (let candidateLength = minCandidatePrefix; candidateLength <= right.text.length; candidateLength += 1) {
+      const distance = Number(previousRow[candidateLength]);
+      if (distance < bestDistance || (distance === bestDistance && candidateLength > bestCandidateLength)) {
+        bestDistance = distance;
+        bestCandidateLength = candidateLength;
+      }
+    }
+    // 当前游标只在同一个 upstream 句子内存活，SentenceEnd 会立即重置；因此
+    // 同开头锚点且候选明显延长时，可以容忍模型对口语长句做较多回改。
+    if (!bestCandidateLength || bestDistance / left.text.length > 0.35) return candidate;
+    committedThroughCandidateIndex = bestCandidateLength - 1;
+  }
+  if (right.text.length <= committedThroughCandidateIndex + 1) return "";
+  const rawCutIndex = Number(right.sourceIndexes[committedThroughCandidateIndex] ?? -1) + 1;
   const suffix = candidate.slice(rawCutIndex);
   return hasSpeechText(suffix) ? suffix : "";
 }
@@ -1486,9 +1526,8 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
 
       // 上游返回的是“从句首到当前”的快照。只提交尚未落稿的前缀，
       // 避免每 12 秒把整句重复插入；若上游回改了前缀，则从新快照重新开始。
-      const prefixMatches = partialProgressCommittedText
-        && candidate.startsWith(partialProgressCommittedText);
-      const delta = prefixMatches ? candidate.slice(partialProgressCommittedText.length) : candidate;
+      const delta = getUncommittedCumulativeText(partialProgressCommittedText, candidate);
+      const continuesCommittedSnapshot = Boolean(partialProgressCommittedText) && delta !== candidate;
       const commitLength = findPartialCommitBoundary(delta);
       if (!commitLength) {
         schedulePartialProgressFlush();
@@ -1508,8 +1547,10 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       transcriptBufferStartedAudioMs = Math.min(estimatedStartMs, currentAudioMs);
       transcriptBufferStartedAt = deps.formatMeetingElapsedTime(transcriptBufferStartedAudioMs / 1000);
       transcriptBufferEndAudioMs = Math.max(transcriptBufferStartedAudioMs + 1, currentAudioMs);
-      partialProgressCommittedText = prefixMatches
-        ? `${partialProgressCommittedText}${commitText}`
+      // 候选累计快照可能回改已提交区间中的少量词，不能再用“旧文本 + 增量”
+      // 拼接游标；直接保留本次候选中已消费到的位置，下一次才能继续正确裁尾。
+      partialProgressCommittedText = continuesCommittedSnapshot
+        ? candidate.slice(0, Math.max(0, candidate.length - delta.length) + commitText.length)
         : commitText;
       partialProgressLastAudioEndMs = transcriptBufferEndAudioMs;
       latestPartial = "";
