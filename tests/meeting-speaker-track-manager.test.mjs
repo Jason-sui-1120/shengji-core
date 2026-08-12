@@ -92,6 +92,53 @@ test("同一 45 秒窗口的两条强轨道一对一映射为两个会议说话�
   assert.equal(new Set(results.map((item) => item.speaker)).size, 2);
 });
 
+test("单次连续长发言可建立新轨道，不会永久停在待识别", async () => {
+  const store = createMemoryStore([{
+    label: "说话人 1",
+    featuresJson: JSON.stringify({ kind: "embedding", vector: vector(0), status: "confirmed" }),
+  }]);
+  const manager = createMeetingSpeakerTrackManager(store);
+  const [result] = await manager.resolveBatch({
+    meetingId: 33,
+    fallbackLabel: "说话人 1",
+    observations: [{
+      key: "speaker_1",
+      embedding: vector(1),
+      durationMs: 7_000,
+      longestContinuousMs: 7_000,
+      evidenceCount: 1,
+      source: "rolling_diarization",
+    }],
+  });
+  assert.equal(result.speaker, "说话人 2");
+  assert.equal(result.status, "confirmed");
+  assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 2);
+});
+
+test("单次短发言仍只进入隐藏候选，避免噪声制造新人", async () => {
+  const store = createMemoryStore([{
+    label: "说话人 1",
+    featuresJson: JSON.stringify({ kind: "embedding", vector: vector(0), status: "confirmed" }),
+  }]);
+  const manager = createMeetingSpeakerTrackManager(store);
+  const [result] = await manager.resolveBatch({
+    meetingId: 34,
+    fallbackLabel: "说话人 1",
+    observations: [{
+      key: "speaker_1",
+      embedding: vector(1),
+      durationMs: 4_500,
+      longestContinuousMs: 4_500,
+      evidenceCount: 1,
+      source: "rolling_diarization",
+    }],
+  });
+  assert.equal(result.speaker, "说话人 1");
+  assert.equal(result.status, "provisional");
+  assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 1);
+  assert.equal(store.rows.filter((row) => row.label.startsWith("__candidate_")).length, 1);
+});
+
 test("分离模型把同一人拆成两条高相似轨道时复用同一会议说话人", async () => {
   const store = createMemoryStore([{
     label: "说话人 1",

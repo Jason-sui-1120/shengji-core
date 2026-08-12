@@ -19,6 +19,7 @@ const DEFAULTS = Object.freeze({
   candidateThreshold: 0.62,
   minMargin: 0.06,
   strongObservationMs: 4_000,
+  singleTurnStrongMs: 6_000,
   candidatePromoteCount: 3,
   maxHiddenCandidates: 8,
 });
@@ -97,6 +98,7 @@ export function createMeetingSpeakerTrackManager(store, options = {}) {
         key: String(item.key ?? item.localTrackId ?? index),
         embedding: normalizeVector(item.embedding.map(Number)),
         durationMs: Math.max(0, Number(item.durationMs || 0)),
+        longestContinuousMs: Math.max(0, Number(item.longestContinuousMs || 0)),
         evidenceCount: Math.max(1, Number(item.evidenceCount || 1)),
       }))
       .sort((left, right) => Number(left.startMs || 0) - Number(right.startMs || 0));
@@ -182,7 +184,13 @@ export function createMeetingSpeakerTrackManager(store, options = {}) {
       const strongObservation = Boolean(
         confirmNewTracks
         || observation.confirmNewTrack
-        || (observation.durationMs >= settings.strongObservationMs && observation.evidenceCount >= 2)
+        || (
+          observation.durationMs >= settings.strongObservationMs
+          && (
+            observation.evidenceCount >= 2
+            || observation.longestContinuousMs >= settings.singleTurnStrongMs
+          )
+        )
       );
       const candidateRanked = rankProfiles(candidates, observation.embedding);
       const candidateWinner = candidateRanked[0] || null;

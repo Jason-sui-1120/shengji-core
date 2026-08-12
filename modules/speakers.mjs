@@ -174,7 +174,8 @@ export async function identifySpeakerByEmbedding({ meetingId, wav, fallbackSpeak
 /**
  * 把一个文件分离窗口里的临时 speaker_0/1 映射为会议级说话人轨道。
  * 每条临时轨道仅抽取最长的连续语音片段做声纹，避免把多人片段拼在一起；
- * 总发言时长和分段数只作为“是否足以创建新轨道”的证据强度。
+ * 总发言时长、分段数和最长连续发言只作为“是否足以创建新轨道”的证据强度。
+ * 一次完整长发言同样是可靠证据，不能因为窗口内只出现一段就永久停在“待识别”。
  */
 export async function resolveDiarizedSpeakerTracks({ meetingId, wav, segments = [], fallbackSpeaker = "" }) {
   if (!wav?.length) return [];
@@ -202,10 +203,10 @@ export async function resolveDiarizedSpeakerTracks({ meetingId, wav, segments = 
       embedding: embeddingResult.embedding,
       confidence: embeddingResult.confidence,
       durationMs: group.durationMs,
+      longestContinuousMs: Math.round((longest.end - longest.start) * 1000),
       evidenceCount: group.segments.length,
       startMs: Math.round(longest.start * 1000),
       source: "rolling_diarization",
-      confirmNewTrack: group.durationMs >= 4_000 && group.segments.length >= 2,
     });
   }
   return meetingSpeakerTrackManager.resolveBatch({ meetingId, observations, fallbackLabel: fallbackSpeaker });

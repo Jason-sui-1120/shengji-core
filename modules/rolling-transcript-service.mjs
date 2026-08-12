@@ -326,6 +326,10 @@ export class RollingTranscriptService {
         windowStartAudioMs,
         centerStartAudioMs: effectiveWindowStartMs,
         centerEndAudioMs: effectiveWindowEndMs,
+      }).then((speakerResult) => {
+        if (speakerResult?.ok === false) {
+          console.warn(`[rolling-speaker] skipped meeting=${Number(meetingId)} reason=${String(speakerResult.reason || "unknown")}`);
+        }
       }).catch((error) => {
         console.warn(`[rolling-speaker] skipped meeting=${Number(meetingId)}: ${error instanceof Error ? error.message : String(error)}`);
       });

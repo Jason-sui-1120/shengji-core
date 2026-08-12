@@ -1,6 +1,6 @@
 {
-  "version": "1.16.0",
-  "releasedAt": "2026-08-11",
+  "version": "1.16.1",
+  "releasedAt": "2026-08-12",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
     {
@@ -85,7 +85,7 @@
     },
     {
       "file": "rolling-transcript-service.mjs",
-      "sha256": "c9bd92aaeedafc444cc1f3843a99e89a5baf62ba3f87b38943d6e860709610d7"
+      "sha256": "efd0a40dbdcf3b32043c3acaef1bfa0a90e52a5a53ae207f781cfaa96ea531e7"
     },
     {
       "file": "rolling-window-plan.mjs",
@@ -93,7 +93,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.mjs",
-      "sha256": "ec68b67e3ab5037d770cb3c587ce8aeb10a58e3a8c918f90d0f1cd58210c9b88"
+      "sha256": "4c307d254e4aee202033f2ea30d382d09eb7f01797f0def6884003ff64fa73c4"
     },
     {
       "file": "speaker-core.mjs",
@@ -113,7 +113,7 @@
     },
     {
       "file": "speakers.mjs",
-      "sha256": "209a86752c063e4ca6bcf97d22107c44fc890594f60309a90f8d7bb237a6698d"
+      "sha256": "9d7fd263fb2822d24bfa3b514b7cc623683a157dad593d8ce46cf22c644aa7df"
     },
     {
       "file": "tail-stabilization.mjs",
@@ -247,7 +247,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.test.mjs",
-      "sha256": "c257d66f112dbbbfa38ffc6c71ce24fc607803a2092682ee4c6b51762de8fcdd"
+      "sha256": "713ad91de4ee2b7a3a12ee566735eb96023366955f2913d280b12daa287822ae"
     },
     {
       "file": "rolling-service-consistency.test.mjs",
@@ -387,7 +387,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "a0bb6eb4ecf12630e5526027fbb626d87efefbf0f48da734b4e425c651a9dde7"
+      "sha256": "d69d165c1e1874de8a1f0850645610b032e8e77a5e96f225984c4f34a27ea837"
     },
     {
       "file": "README.md",
