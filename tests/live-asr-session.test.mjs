@@ -8,7 +8,7 @@ import { test } from "node:test";
 const moduleUrl = existsSync(new URL("../modules/live-asr-session.mjs", import.meta.url))
   ? new URL("../modules/live-asr-session.mjs", import.meta.url)
   : new URL("./live-asr-session.mjs", import.meta.url);
-const { createLiveAsrSession, getUpstreamReconnectPlan, shouldSuppressLiveTranscriptDuplicate } = await import(moduleUrl);
+const { createLiveAsrSession, getUncommittedCumulativeText, getUpstreamReconnectPlan, shouldSuppressLiveTranscriptDuplicate } = await import(moduleUrl);
 const rollingModuleUrl = existsSync(new URL("../modules/rolling-transcript-service.mjs", import.meta.url))
   ? new URL("../modules/rolling-transcript-service.mjs", import.meta.url)
   : new URL("./rolling-transcript-service.mjs", import.meta.url);
@@ -100,6 +100,31 @@ test("流式累计 SentenceEnd 与 partial-progress 重叠时只保留一条草�
     { text: "我们本周继续推进项目。", audioStartMs: 10_000, audioEndMs: 12_000, reason: "sentence_end" },
     { text: "我们本周重新评估预算。", audioStartMs: 12_300, audioEndMs: 14_000, reason: "sentence_end" },
   ), false, "相邻但内容不同的真实发言必须保留");
+});
+
+test("累计 partial 跨浏览器 VAD 端点时只返回未落轴尾部", () => {
+  assert.equal(
+    getUncommittedCumulativeText(
+      "测试的话这个场景没有覆盖真实人员",
+      "测试的话这个场景没有覆盖真实人员，所以角色掉落以后下游没有发现",
+    ),
+    "，所以角色掉落以后下游没有发现",
+  );
+  assert.equal(
+    getUncommittedCumulativeText(
+      "项目应该有一个完整的 checklist。",
+      "项目应该有一个完整的checklist，这个 checklist 需要人事和 UC 全部确认。",
+    ),
+    "，这个 checklist 需要人事和 UC 全部确认。",
+  );
+  assert.equal(
+    getUncommittedCumulativeText("这是已经落轴的完整句子", "这是已经落轴的完整句子。"),
+    "",
+  );
+  assert.equal(
+    getUncommittedCumulativeText("上一句话已经结束", "这是完全不同的新一句"),
+    "这是完全不同的新一句",
+  );
 });
 
 class FakeSocket {

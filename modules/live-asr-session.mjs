@@ -84,6 +84,48 @@ export function shouldSuppressLiveTranscriptDuplicate(previous, current, options
   return ordinaryDuplicate || progressFinalDuplicate || options.force === true;
 }
 
+/**
+ * 火山 LM 的 partial 是“从当前上游句首到现在”的累计快照，而不是增量。
+ * 浏览器 VAD 的短暂停顿不代表上游已经开启新句，不能据此清空累计游标。
+ * 这里把已经持久化的累计前缀从新快照中裁掉，只返回尚未落轴的文本。
+ */
+export function getUncommittedCumulativeText(committedText, candidateText) {
+  const committed = String(committedText || "");
+  const candidate = String(candidateText || "");
+  const hasSpeechText = (value) => Boolean(String(value || "").replace(/[\s，,。！？!?；;：:、]/g, ""));
+  if (!candidate) return "";
+  if (!committed) return candidate;
+  if (candidate.startsWith(committed)) {
+    const suffix = candidate.slice(committed.length);
+    return hasSpeechText(suffix) ? suffix : "";
+  }
+  if (committed.startsWith(candidate)) return "";
+
+  // 允许上游在最终快照中轻微调整空格或标点。比较时忽略这些字符，
+  // 但通过索引映射仍从原候选文本的正确位置裁切。
+  const compactWithMap = (value) => {
+    const compact = [];
+    const sourceIndexes = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (/[\s，,。！？!?；;：:、]/.test(value[index])) continue;
+      compact.push(value[index]);
+      sourceIndexes.push(index);
+    }
+    return { text: compact.join(""), sourceIndexes };
+  };
+  const left = compactWithMap(committed);
+  const right = compactWithMap(candidate);
+  const shorterLength = Math.min(left.text.length, right.text.length);
+  let sharedPrefix = 0;
+  while (sharedPrefix < shorterLength && left.text[sharedPrefix] === right.text[sharedPrefix]) sharedPrefix += 1;
+  const closePrefix = sharedPrefix >= 8 && sharedPrefix / shorterLength >= 0.8;
+  if (!closePrefix) return candidate;
+  if (right.text.length <= sharedPrefix) return "";
+  const rawCutIndex = Number(right.sourceIndexes[sharedPrefix - 1] ?? -1) + 1;
+  const suffix = candidate.slice(rawCutIndex);
+  return hasSpeechText(suffix) ? suffix : "";
+}
+
 export async function createLiveAsrSession(client, clientUrl, deps) {
   // 这个模块同时运行在 SQLite 公网端和 MySQL 公司端，不能再隐式读取宿主
   // index.mjs 的全局变量。所有 Node 运行时对象和端侧状态都必须显式注入。
@@ -582,6 +624,13 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
 
       if (name === "SentenceEnd" && result) {
+        // SentenceEnd 可能把此前已按 partial-progress 落过的整句再次返回。
+        // 只提交尚未落轴的尾部；若没有尾部则不再插入完整重复句。
+        const normalizedSentence = deps.normalizeTranscriptSegment(result);
+        const uncommittedSentence = deps.normalizeTranscriptSegment(
+          getUncommittedCumulativeText(partialProgressCommittedText, normalizedSentence),
+        );
+        const committedAudioEndMs = partialProgressLastAudioEndMs;
         resetPartialProgressState();
         // P0：端到端可观测状态——首帧 ASR 结果
         if (!firstAsrResult) {
@@ -591,10 +640,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           safeSend({ type: "status", status: "first_asr_result", kind: "final" });
         }
         const payload = message?.payload || {};
-        pushTranscriptSegment(result, {
-          startMs: mapUpstreamAudioTime(payload.begin_time ?? payload.beginTime ?? payload.start_time ?? payload.startTime),
-          endMs: mapUpstreamAudioTime(payload.end_time ?? payload.endTime ?? payload.time),
-        });
+        const mappedStartMs = mapUpstreamAudioTime(payload.begin_time ?? payload.beginTime ?? payload.start_time ?? payload.startTime);
+        const mappedEndMs = mapUpstreamAudioTime(payload.end_time ?? payload.endTime ?? payload.time);
+        if (uncommittedSentence) {
+          pushTranscriptSegment(uncommittedSentence, {
+            startMs: committedAudioEndMs > 0 ? Math.max(mappedStartMs, committedAudioEndMs) : mappedStartMs,
+            endMs: mappedEndMs,
+          });
+        }
         // SentenceEnd 是上游已确认的句界，不能再把草稿是否落库交给浏览器
         // VAD 的 endpoint 事件决定。浏览器端点事件丢失、延迟或连续说话时，
         // 这里仍必须在短延迟后冻结这一段并写入时间轴；45 秒稳定稿会再原位替换。
@@ -706,10 +759,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
           activeRollingSpeech = null;
         }
         scheduleTranscriptFlush(control.reason || "endpoint", { fallbackToPartial: true });
-        // 当前 VAD 端点已经交给常规 flush；下一句必须从零开始计算
-        // partial 前缀，不能沿用上一句的提交进度。
-        partialProgressCommittedText = "";
-        partialProgressLastAudioEndMs = 0;
+        // 浏览器 VAD 的短暂停顿不等于上游 LM 已经切句。上游仍可能继续返回
+        // 从原句首开始的累计 partial，因此这里必须保留累计游标；真正收到
+        // SentenceEnd 或上游重启时才重置。
         return;
       }
       if (text === "stop") {
@@ -1526,6 +1578,20 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     // capturedAtAudioMs：入队时的当前音频偏移量——flushTranscriptBufferInner 在缺少 ASR 句尾时间戳时
     // 只能用快照的 capturedAtAudioMs（不是排队任务真正执行时的当前会议时间），防止前一段耗时较长时
     // 扩大前一段时间区间（影响稳定稿对齐、去重和回放定位）。
+    let snapshotLatestPartial = latestPartial;
+    if (!transcriptBuffer && options?.fallbackToPartial && snapshotLatestPartial) {
+      const cumulativeCandidate = deps.normalizeTranscriptSegment(snapshotLatestPartial);
+      snapshotLatestPartial = deps.normalizeTranscriptSegment(
+        getUncommittedCumulativeText(partialProgressCommittedText, cumulativeCandidate),
+      );
+      // 入队即占用这一累计前缀，避免排队期间另一个 endpoint/定时器
+      // 再把同一快照入队。若上游下一次确实从新句开始，前缀不匹配会自然
+      // 返回完整新句，不会吞掉真实发言。
+      if (cumulativeCandidate) {
+        partialProgressCommittedText = cumulativeCandidate;
+        partialProgressLastAudioEndMs = getTranscriptAudioOffsetMs();
+      }
+    }
     const snapshot = {
       text: transcriptBuffer,
       startedAt: transcriptBufferStartedAt,
@@ -1536,7 +1602,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       audioBytes: speechAudioBytes,
       pendingSpeechStart: pendingSpeechStartAt,
       pendingSpeechStartAudioMs,
-      latestPartial,
+      latestPartial: snapshotLatestPartial,
     };
     // 立即清空活动缓冲——新句子从空 buffer 开始，不与本次 flush 混。
     transcriptBuffer = "";
