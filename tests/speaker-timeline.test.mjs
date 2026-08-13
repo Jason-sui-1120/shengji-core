@@ -13,7 +13,10 @@ const {
 const speakersModuleUrl = existsSync(new URL("../modules/speakers.mjs", import.meta.url))
   ? new URL("../modules/speakers.mjs", import.meta.url)
   : new URL("./speakers.mjs", import.meta.url);
-const { normalizeDiarizationSegments } = await import(speakersModuleUrl);
+const {
+  normalizeDiarizationSegments,
+  normalizeSpeakerEmbeddingPayload,
+} = await import(speakersModuleUrl);
 const speakerCoreModuleUrl = existsSync(new URL("../modules/speaker-core.mjs", import.meta.url))
   ? new URL("../modules/speaker-core.mjs", import.meta.url)
   : new URL("./speaker-core.mjs", import.meta.url);
@@ -55,6 +58,17 @@ test("说话人直连鉴权使用统一配置值而不是绕过配置层读取�
     authorization: "Bearer configured-key",
   });
   assert.deepEqual(buildAitAuthorizationHeaders(""), {});
+});
+
+test("说话人 embedding 响应必须归一化为可用于会议轨道的单位向量", () => {
+  const result = normalizeSpeakerEmbeddingPayload({
+    embeddings: [
+      { embedding: [1, 0], confidence: 0.5 },
+      { embedding: [3, 4], confidence: 0.9 },
+    ],
+  });
+  assert.deepEqual(result, { embedding: [0.6, 0.8], confidence: 0.9 });
+  assert.equal(normalizeSpeakerEmbeddingPayload({ embeddings: [] }), null);
 });
 
 test("说话人回源失败时上传同一段 WAV 到 AIT 临时文件服务后重试", async () => {

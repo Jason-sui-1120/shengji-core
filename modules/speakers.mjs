@@ -7,7 +7,7 @@ import {
   SPEAKER_EMBEDDING_THRESHOLD, SPEAKER_CANDIDATE_THRESHOLD,
   SPEAKER_CANDIDATE_PROMOTE_COUNT, SPEAKER_DIARIZATION_MIN_SEGMENT_SECONDS,
 } from "./config.mjs";
-import { safeParseJson } from "./speaker-utils.mjs";
+import { normalizeVector, safeParseJson } from "./speaker-utils.mjs";
 import { hasAiAccess, getSpeakerAudioUrl, normalizeDiarizationTime, normalizeConfidence } from "./speaker-core.mjs";
 import { extractVoiceFeatures, getFeatureDistance, mergeVoiceFeatures } from "./voice-features.mjs";
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
@@ -277,22 +277,31 @@ export async function extractSpeakerEmbedding(wav, meetingId) {
       console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} failed ${summarizeSpeakerFailure({ ...response, text: JSON.stringify(payload) }, "payload_error")}`);
       return null;
     }
-    const embeddings = Array.isArray(payload?.embeddings) ? payload.embeddings : [];
-    const best = embeddings
-      .filter((item) => Array.isArray(item?.embedding) && item.embedding.length)
-      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
-    if (!best) {
+    const normalized = normalizeSpeakerEmbeddingPayload(payload);
+    if (!normalized) {
       console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} empty status=${Number(response.status || 200)} requestId=${String(response.requestId || "-")}`);
       return null;
     }
-    return {
-      embedding: normalizeVector(best.embedding.map(Number)),
-      confidence: Number(best.confidence || 0),
-    };
+    return normalized;
   } catch (error) {
     console.warn(`[speaker-embedding] meeting=${Number(meetingId || 0)} exception=${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+}
+
+/**
+ * 把 embedding 接口的候选结果收敛成单位向量。保持为纯函数，确保构建/同步时
+ * 不会再出现“接口成功但本地缺少 normalizeVector 引用”这类只能在线上触发的错误。
+ */
+export function normalizeSpeakerEmbeddingPayload(payload) {
+  const embeddings = Array.isArray(payload?.embeddings) ? payload.embeddings : [];
+  const best = embeddings
+    .filter((item) => Array.isArray(item?.embedding) && item.embedding.length)
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
+  if (!best) return null;
+  const embedding = normalizeVector(best.embedding.map(Number));
+  if (!embedding.length) return null;
+  return { embedding, confidence: Number(best.confidence || 0) };
 }
 
 export async function identifySpeakerByLocalProfile({ meetingId, wav }) {
