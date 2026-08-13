@@ -188,6 +188,7 @@ test("稳定文件稿替换：删除旧自动行与写入 canonical 段必须交
 
 test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已识别的说话人", async () => {
   const enrichmentCalls = [];
+  const resolvedTrackCalls = [];
   const stableRevisions = [];
   const service = new RollingTranscriptService({
     async applySpeakerEnrichment(meetingId, payload) {
@@ -202,7 +203,8 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
         { speaker: "说话人 2", start: 10, end: 12, confidence: 91 },
       ];
     },
-    async resolveDiarizedSpeakerTracks() {
+    async resolveDiarizedSpeakerTracks(payload) {
+      resolvedTrackCalls.push(payload);
       return [
         { key: "说话人 1", speaker: "说话人 4", confidence: 93, status: "confirmed" },
         { key: "说话人 2", speaker: "说话人 2", confidence: 94, status: "confirmed" },
@@ -247,6 +249,56 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
     },
   });
   assert.deepEqual(stableRevisions, [{ meetingId: 77, stableRevision: 19 }]);
+  assert.deepEqual(
+    resolvedTrackCalls[0].segments.map((segment) => [segment.speaker, segment.start, segment.end]),
+    [["说话人 1", 8, 10], ["说话人 2", 10, 12]],
+  );
+});
+
+test("说话人轨道只学习中心提交区间，不重复学习相邻窗口上下文", async () => {
+  const resolvedTrackCalls = [];
+  const service = new RollingTranscriptService({
+    async applySpeakerEnrichment() {
+      return { updatedCount: 1, stableRevision: 21 };
+    },
+  }, {
+    async diarizeSpeakerSegments() {
+      return [
+        { speaker: "context-before", start: 0, end: 9, confidence: 95 },
+        { speaker: "center", start: 9, end: 52, confidence: 93 },
+        { speaker: "context-after", start: 52, end: 61, confidence: 96 },
+      ];
+    },
+    async resolveDiarizedSpeakerTracks(payload) {
+      resolvedTrackCalls.push(payload);
+      return [{ key: "center", speaker: "说话人 1", confidence: 93, status: "confirmed" }];
+    },
+    async afterStableCorrection() {},
+  });
+
+  const result = await service.enrichStableWindowSpeakers({
+    meetingId: 88,
+    wav: Buffer.from([1, 2, 3]),
+    audioPath: "/tmp/meeting-88-window.wav",
+    windowStartAudioMs: 45_000,
+    centerStartAudioMs: 53_000,
+    centerEndAudioMs: 98_000,
+    insertedRows: [{
+      id: 601,
+      speaker: "待识别",
+      speakerSource: "file_asr",
+      audioStartMs: 54_000,
+      audioEndMs: 97_000,
+      userEdited: 0,
+    }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(resolvedTrackCalls.length, 1);
+  assert.deepEqual(
+    resolvedTrackCalls[0].segments.map((segment) => [segment.speaker, segment.start, segment.end]),
+    [["context-before", 8, 9], ["center", 9, 52], ["context-after", 52, 53]],
+  );
 });
 
 test("稳定稿逐词时间完整时按真实换人点生成拆行计划", async () => {

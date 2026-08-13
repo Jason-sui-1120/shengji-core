@@ -639,16 +639,35 @@ export class RollingTranscriptService {
     if (!Array.isArray(diarizationSegments) || !diarizationSegments.length) {
       return { ok: false, reason: "diarization_empty" };
     }
+    // 文件 ASR 可以携带中心区间前后的上下文来保全断句，但这些上下文会在
+    // 相邻窗口再次出现。若把整段 60~90 秒的分离结果都用于更新会议级声纹，
+    // 同一段人声会被重复学习并逐步拉偏画像。轨道解析只消费本轮真正提交的
+    // 中心区间；后续落轴仍使用同一份中心片段，不改变稳定稿覆盖范围。
+    const centerRelativeStartSeconds = Math.max(0, (Number(centerStartAudioMs || 0) - Number(windowStartAudioMs || 0)) / 1000);
+    const centerRelativeEndSeconds = Math.max(
+      centerRelativeStartSeconds,
+      (Number(centerEndAudioMs || 0) - Number(windowStartAudioMs || 0)) / 1000,
+    );
+    const committedDiarizationSegments = diarizationSegments
+      .map((segment) => {
+        const start = Math.max(centerRelativeStartSeconds, Number(segment?.start || 0));
+        const end = Math.min(centerRelativeEndSeconds, Number(segment?.end || 0));
+        return end > start ? { ...segment, start, end } : null;
+      })
+      .filter(Boolean);
+    if (!committedDiarizationSegments.length) {
+      return { ok: false, reason: "diarization_outside_commit_window" };
+    }
     const trackAssignments = await this.resolveDiarizedSpeakerTracks({
       meetingId,
       wav,
-      segments: diarizationSegments,
+      segments: committedDiarizationSegments,
     });
     const globalByLocal = new Map((Array.isArray(trackAssignments) ? trackAssignments : [])
       .filter((item) => item?.status === "confirmed" && item?.speaker && item.speaker !== "待识别")
       .map((item) => [String(item.key), item]));
     if (!globalByLocal.size) return { ok: false, reason: "speaker_tracks_unconfirmed" };
-    const resolvedSegments = diarizationSegments
+    const resolvedSegments = committedDiarizationSegments
       .map((segment) => {
         const resolved = globalByLocal.get(String(segment?.speaker || ""));
         return resolved ? {
