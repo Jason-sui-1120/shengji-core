@@ -9,7 +9,11 @@ import { randomUUID } from "node:crypto";
 import { audioDir } from "./env.mjs";
 import { wrapPcm16AsWav } from "./audio-utils.mjs";
 import { normalizeTranscriptSegment } from "./text-utils.mjs";
-import { composeCanonicalFileSegments } from "./transcript-composer.mjs";
+import {
+  buildAbsoluteTimedWords,
+  composeCanonicalFileSegments,
+  planSpeakerTurnSplits,
+} from "./transcript-composer.mjs";
 import { computeTranscriptCoverage, planCoverageRepairWindows } from "./transcript-coverage.mjs";
 import { getAbsoluteFileSegments, getCharOverlapRatio, summarizeCompositionSegment, formatMeetingElapsedTime, getFileTimestampScale, normalizeFileTimestamp } from "./file-segments.mjs";
 import { applyGlossaryAliasCorrections } from "./glossary-text.mjs";
@@ -322,6 +326,7 @@ export class RollingTranscriptService {
         meetingId,
         wav,
         audioPath,
+        fileResult: result,
         insertedRows: replacement.insertedRows,
         windowStartAudioMs,
         centerStartAudioMs: effectiveWindowStartMs,
@@ -616,6 +621,7 @@ export class RollingTranscriptService {
     meetingId,
     wav,
     audioPath,
+    fileResult,
     insertedRows,
     windowStartAudioMs,
     centerStartAudioMs,
@@ -673,20 +679,48 @@ export class RollingTranscriptService {
       speaker: winner.speaker,
       confidence: Number(winner.confidence || 70),
     })).filter((item) => item.id > 0 && item.speaker && item.speaker !== "待识别");
-    if (!assignments.length) return { ok: false, reason: "no_row_overlap" };
+
+    // 文件稿一行可能横跨多次换人。仅按“整行最大重叠”归给一个人，会把行内
+    // 其他人的发言全部算成同一个说话人。只有逐词时间戳能完整复原稳定文字时
+    // 才按真实换人点拆行；任何漏词、热词改写或时间不完整都继续保守地整行归属。
+    const timestampScale = getFileTimestampScale(fileResult || {});
+    const timedWords = buildAbsoluteTimedWords(fileResult?.words || [], {
+      windowStartMs: windowStartAudioMs,
+      timestampScale,
+    });
+    const splitPlans = planSpeakerTurnSplits(
+      insertedRows,
+      timedWords,
+      absoluteSegments,
+      speakerByWindowLabel,
+    ).map((plan) => ({
+      ...plan,
+      groups: plan.groups.map((group) => ({
+        ...group,
+        time: formatMeetingElapsedTime(Number(group.startMs || 0) / 1000),
+      })),
+    }));
+    const splitRowIds = new Set(splitPlans.map((plan) => Number(plan?.row?.id || 0)));
+    const wholeRowAssignments = assignments.filter((item) => !splitRowIds.has(Number(item.id)));
+    if (!wholeRowAssignments.length && !splitPlans.length) return { ok: false, reason: "no_row_overlap" };
 
     const applied = await this.store.applySpeakerEnrichment(meetingId, {
       transcriptIds: insertedRows.map((row) => Number(row.id)).filter((id) => id > 0),
-      assignments,
-      splitPlans: [],
+      assignments: wholeRowAssignments,
+      splitPlans,
     });
     if (Number(applied?.updatedCount || 0) > 0) {
       await this.afterStableCorrection(meetingId, Number(applied.stableRevision || 0));
     }
     return {
       ok: true,
-      speakerCount: new Set(assignments.map((item) => item.speaker)).size,
+      speakerCount: new Set([
+        ...wholeRowAssignments.map((item) => item.speaker),
+        ...splitPlans.flatMap((plan) => plan.groups.map((group) => group.speaker)),
+      ]).size,
       updatedCount: Number(applied?.updatedCount || 0),
+      splitRowCount: Number(applied?.splitRowCount || 0),
+      insertedRowCount: Number(applied?.insertedRowCount || 0),
       stableRevision: Number(applied?.stableRevision || 0),
     };
   }

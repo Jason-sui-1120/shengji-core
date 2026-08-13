@@ -226,7 +226,14 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
     ],
   });
 
-  assert.deepEqual(result, { ok: true, speakerCount: 2, updatedCount: 2, stableRevision: 19 });
+  assert.deepEqual(result, {
+    ok: true,
+    speakerCount: 2,
+    updatedCount: 2,
+    splitRowCount: 0,
+    insertedRowCount: 0,
+    stableRevision: 19,
+  });
   assert.equal(enrichmentCalls.length, 1);
   assert.deepEqual(enrichmentCalls[0], {
     meetingId: 77,
@@ -240,4 +247,60 @@ test("稳定稿落库后异步回填窗口说话人，不依赖草稿阶段已�
     },
   });
   assert.deepEqual(stableRevisions, [{ meetingId: 77, stableRevision: 19 }]);
+});
+
+test("稳定稿逐词时间完整时按真实换人点生成拆行计划", async () => {
+  const enrichmentCalls = [];
+  const service = new RollingTranscriptService({
+    async applySpeakerEnrichment(meetingId, payload) {
+      enrichmentCalls.push({ meetingId, payload });
+      return { updatedCount: 1, splitRowCount: 1, insertedRowCount: 1, stableRevision: 20 };
+    },
+  }, {
+    async diarizeSpeakerSegments() {
+      return [
+        { speaker: "local-1", start: 1, end: 3, confidence: 90 },
+        { speaker: "local-2", start: 3, end: 5, confidence: 91 },
+      ];
+    },
+    async resolveDiarizedSpeakerTracks() {
+      return [
+        { key: "local-1", speaker: "说话人 1", confidence: 92, status: "confirmed" },
+        { key: "local-2", speaker: "说话人 2", confidence: 93, status: "confirmed" },
+      ];
+    },
+    async afterStableCorrection() {},
+  });
+
+  const result = await service.enrichStableWindowSpeakers({
+    meetingId: 77,
+    wav: Buffer.from([1, 2, 3]),
+    audioPath: "/tmp/meeting-77-window.wav",
+    fileResult: {
+      words: [
+        { word: "你好", start: 1, end: 2.9 },
+        { word: "大家好", start: 3.1, end: 5 },
+      ],
+    },
+    windowStartAudioMs: 45_000,
+    centerStartAudioMs: 45_000,
+    centerEndAudioMs: 51_000,
+    insertedRows: [{
+      id: 503,
+      text: "你好，大家好。",
+      speaker: "待识别",
+      speakerSource: "file_asr",
+      audioStartMs: 46_000,
+      audioEndMs: 50_000,
+      userEdited: 0,
+    }],
+  });
+
+  assert.equal(result.splitRowCount, 1);
+  assert.equal(result.insertedRowCount, 1);
+  assert.deepEqual(enrichmentCalls[0].payload.assignments, []);
+  assert.deepEqual(
+    enrichmentCalls[0].payload.splitPlans[0].groups.map((group) => [group.speaker, group.text]),
+    [["说话人 1", "你好，"], ["说话人 2", "大家好。"]],
+  );
 });
