@@ -46,7 +46,7 @@ function createMemoryStore(seed = []) {
   };
 }
 
-test("第一条声纹立即建立说话人 1，不显示待识别", async () => {
+test("第一条短声纹立即显示说话人 1，但不抢占正式轨道", async () => {
   const store = createMemoryStore();
   const manager = createMeetingSpeakerTrackManager(store);
   const [result] = await manager.resolveBatch({
@@ -54,7 +54,33 @@ test("第一条声纹立即建立说话人 1，不显示待识别", async () => 
     observations: [{ key: "realtime-1", embedding: vector(0), durationMs: 1800, source: "embedding" }],
   });
   assert.equal(result.speaker, "说话人 1");
-  assert.equal(result.status, "confirmed");
+  assert.equal(result.status, "provisional");
+  assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 0);
+  assert.equal(store.rows.filter((row) => row.label.startsWith("__candidate_")).length, 1);
+});
+
+test("短实时声纹不污染首号，首个可靠文件轨道仍建立为说话人 1", async () => {
+  const store = createMemoryStore();
+  const manager = createMeetingSpeakerTrackManager(store);
+  const [realtime] = await manager.resolveBatch({
+    meetingId: 11,
+    observations: [{ key: "realtime-noisy", embedding: vector(0), durationMs: 1600, source: "embedding" }],
+  });
+  const [stable] = await manager.resolveBatch({
+    meetingId: 11,
+    observations: [{
+      key: "speaker_0",
+      embedding: vector(1),
+      durationMs: 30_000,
+      longestContinuousMs: 18_000,
+      evidenceCount: 3,
+      source: "rolling_diarization",
+    }],
+  });
+  assert.equal(realtime.speaker, "说话人 1");
+  assert.equal(realtime.status, "provisional");
+  assert.equal(stable.speaker, "说话人 1");
+  assert.equal(stable.status, "confirmed");
   assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 1);
 });
 

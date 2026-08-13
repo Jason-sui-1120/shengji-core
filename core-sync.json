@@ -1,5 +1,5 @@
 {
-  "version": "1.16.7",
+  "version": "1.16.8",
   "releasedAt": "2026-08-13",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -93,7 +93,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.mjs",
-      "sha256": "4c307d254e4aee202033f2ea30d382d09eb7f01797f0def6884003ff64fa73c4"
+      "sha256": "7533c72add204ee377481a8473826869a054a5f3e11a163ff143bccf1c5b26f7"
     },
     {
       "file": "speaker-core.mjs",
@@ -247,7 +247,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.test.mjs",
-      "sha256": "713ad91de4ee2b7a3a12ee566735eb96023366955f2913d280b12daa287822ae"
+      "sha256": "c8bde8985b4145a5fa275870f3e7532dc98542dfc7e293aaf32e6a6d46e741ce"
     },
     {
       "file": "rolling-service-consistency.test.mjs",
@@ -387,7 +387,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "57fe4f49863f49beb0e68f708163e4a8b1d48a808093cbe886e0f32f43159f6e"
+      "sha256": "a38bde453f474508661faf4238298fa96a3d7969d53b281a73b8f0cb711dfd95"
     },
     {
       "file": "README.md",

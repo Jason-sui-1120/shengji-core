@@ -247,8 +247,11 @@ export function createMeetingSpeakerTrackManager(store, options = {}) {
         continue;
       }
 
-      // 第一条可靠声纹直接建立会议的首条轨道；45 秒/会后强证据也可建立新轨道。
-      if (!confirmed.length || strongObservation) {
+      // 只有强证据才能正式占用“说话人 N”编号。实时短句仍立即返回
+      // provisionalFallback（首条即“说话人 1”），但先积累成隐藏候选；否则开场
+      // 1~2 秒的数字、噪声或截断片段会污染首条画像，后续 45 秒可靠声纹只能被
+      // 错误地新建成“说话人 2”，造成单人会议显示两个人。
+      if (strongObservation) {
         const label = await store.getNextSpeakerLabel(null, key);
         const profileJson = buildProfileJson(observation.embedding, {}, {
           status: "confirmed",
