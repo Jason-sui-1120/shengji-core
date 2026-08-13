@@ -81,6 +81,9 @@ export async function diarizeSpeakerSegments({ meetingId, wav, audioPath, timeou
       model: AIT_SPEAKER_DIARIZATION_MODEL,
       user: `voice-notes-meeting-${Number(meetingId || 1)}`,
       url: audioUrl,
+      // 仅供声纪网关在回源 URL 不可访问时上传到 AIT 临时文件服务；
+      // speaker-gateway 会在请求 CampPlus 前移除此字段，不会传给模型端点。
+      audioBase64: wav.toString("base64"),
       language: "zh",
       enable_words: true,
       speaker_diarization: true,

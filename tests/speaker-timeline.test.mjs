@@ -21,7 +21,10 @@ const { resolveSpeakerPublicBaseUrl } = await import(speakerCoreModuleUrl);
 const speakerGatewayModuleUrl = existsSync(new URL("../modules/speaker-gateway.mjs", import.meta.url))
   ? new URL("../modules/speaker-gateway.mjs", import.meta.url)
   : new URL("./speaker-gateway.mjs", import.meta.url);
-const { buildAitAuthorizationHeaders } = await import(speakerGatewayModuleUrl);
+const {
+  buildAitAuthorizationHeaders,
+  executeDirectSpeakerDiarization,
+} = await import(speakerGatewayModuleUrl);
 const audioSignatureModuleUrl = existsSync(new URL("../modules/audio-access-signature.mjs", import.meta.url))
   ? new URL("../modules/audio-access-signature.mjs", import.meta.url)
   : new URL("./audio-access-signature.mjs", import.meta.url);
@@ -52,6 +55,63 @@ test("说话人直连鉴权使用统一配置值而不是绕过配置层读取�
     authorization: "Bearer configured-key",
   });
   assert.deepEqual(buildAitAuthorizationHeaders(""), {});
+});
+
+test("说话人回源失败时上传同一段 WAV 到 AIT 临时文件服务后重试", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith("/audio/speaker/diarization")) {
+      const body = JSON.parse(String(init.body || "{}"));
+      assert.equal("audioBase64" in body, false);
+      if (body.url === "https://voice.example.com/unreachable.wav") {
+        return new Response(JSON.stringify({ error: "audio URL download failed" }), { status: 400 });
+      }
+      assert.equal(body.url, "https://files.example.com/temp.wav");
+      return new Response(JSON.stringify({ segments: [{ speaker: 0, start: 0, end: 2 }] }), { status: 200 });
+    }
+    if (String(url).endsWith("/files")) {
+      assert.ok(init.body instanceof FormData);
+      return new Response(JSON.stringify({ id: "file-1" }), { status: 200 });
+    }
+    if (String(url).endsWith("/files/file-1/url")) {
+      return new Response(JSON.stringify({ url: "https://files.example.com/temp.wav" }), { status: 200 });
+    }
+    throw new Error(`unexpected URL: ${url}`);
+  };
+
+  const result = await executeDirectSpeakerDiarization({
+    model: "ke-campplus-16k-common-advanced",
+    url: "https://voice.example.com/unreachable.wav",
+    audioBase64: Buffer.from("wav-bytes").toString("base64"),
+  }, {
+    apiKey: "configured-key",
+    apiBase: "https://ait.example.com/v1",
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(calls.filter((call) => call.url.endsWith("/audio/speaker/diarization")).length, 2);
+});
+
+test("模型推理错误不重复上传同一段音频", async () => {
+  const calls = [];
+  const result = await executeDirectSpeakerDiarization({
+    model: "ke-campplus-16k-common-advanced",
+    url: "https://voice.example.com/valid.wav",
+    audioBase64: Buffer.from("wav-bytes").toString("base64"),
+  }, {
+    apiKey: "configured-key",
+    apiBase: "https://ait.example.com/v1",
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ error: "ARPACK error -9: Starting vector is zero" }), { status: 400 });
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.deepEqual(calls, ["https://ait.example.com/v1/audio/speaker/diarization"]);
 });
 
 test("0 基分离标签不能把 speaker_0 与 speaker_1 合并成同一人", () => {

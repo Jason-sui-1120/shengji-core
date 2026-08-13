@@ -438,6 +438,7 @@ export class RollingTranscriptService {
       glossaryEntries,
       replaceExistingAutoRows: true,
       auditTrace: {},
+      audioPath,
       abortSignal,
     });
 
@@ -627,7 +628,7 @@ export class RollingTranscriptService {
       meetingId,
       wav,
       audioPath,
-      timeoutMs: 20_000,
+      timeoutMs: 30_000,
     });
     if (!Array.isArray(diarizationSegments) || !diarizationSegments.length) {
       return { ok: false, reason: "diarization_empty" };

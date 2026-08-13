@@ -175,11 +175,13 @@ test("稳定文件稿替换：删除旧自动行与写入 canonical 段必须交
     windowEndAudioMs: 8_000,
     effectiveWindowStartMs: 1_000,
     effectiveWindowEndMs: 5_000,
+    audioPath: "/tmp/meeting-77-window.wav",
   });
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].meetingId, 77);
   assert.equal(calls[0].payload.replaceExistingAutoRows, true);
+  assert.equal(calls[0].payload.audioPath, "/tmp/meeting-77-window.wav");
   assert.equal(result.deletedCount, 3);
   assert.equal(result.compositionTrace.replacementInTransaction, true);
 });
