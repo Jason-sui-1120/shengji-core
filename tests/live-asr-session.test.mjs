@@ -613,7 +613,10 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
     applyGlossaryAliasCorrections: (text) => text,
     analyzePcmQuality: () => ({ durationMs: 0 }),
     savePcmAsWav: () => ({ audioPath: "", wav: null }),
-    buildTranscriptLineDrafts: () => [],
+    buildTranscriptLineDrafts: () => {
+      events.push("draft-built");
+      return [];
+    },
     insertTranscript: async (line) => line,
     shouldFlushTranscriptBuffer: () => false,
     looksSemanticallyIncomplete: () => false,
@@ -680,6 +683,15 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
   sealingClient.handlers.get("message")("stop", false);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(forceCalls, 0, "正在执行的会中文件窗口不能被当作已完成");
+
+  // StopTranscription 生效前，上游仍可能晚到最后一个 SentenceEnd。seal 已经用
+  // 当时的缓冲做尾段收口，这个晚到结果不能再写成一条重复实时草稿。
+  upstream.emit("message", JSON.stringify({
+    header: { name: "SentenceEnd" },
+    payload: { result: "结束后晚到的句末不能再次落库", begin_time: 1_000, end_time: 2_000 },
+  }), false);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(events.includes("draft-built"), false, "停止后的晚到 SentenceEnd 必须被丢弃");
 
   events.push("first-window-resolved");
   resolveFirstCorrection({ lastProcessedTranscriptId: 0 });

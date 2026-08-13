@@ -647,6 +647,12 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
 
       if (name === "TranscriptionResultChanged" && result) {
+        // 用户点击结束后，sealMeeting 已经冻结并排空当时的活动缓冲。上游在
+        // StopTranscription 真正生效前仍可能晚到 partial/SentenceEnd；这些结果
+        // 若继续入队，会在尾窗文件稿和会后说话人校准完成后重新插入一条草稿，
+        // 形成尾部重复。停止标志之后的新上游文本一律忽略，已有快照仍由
+        // flushChain/尾段文件稿正常收口。
+        if (stopRequested) return;
         latestPartial = result;
         // P0：端到端可观测状态——首帧 ASR 结果
         if (!firstAsrResult) {
@@ -664,6 +670,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
 
       if (name === "SentenceEnd" && result) {
+        if (stopRequested) return;
         // SentenceEnd 可能把此前已按 partial-progress 落过的整句再次返回。
         // 只提交尚未落轴的尾部；若没有尾部则不再插入完整重复句。
         const normalizedSentence = deps.normalizeTranscriptSegment(result);
@@ -696,6 +703,9 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
 
       if (name === "TranscriptionFailed" || name === "TASK_FAILED") {
+        // 结束流程已经冻结当前会议输入，尾段校准期间不再为旧上游任务重连。
+        // sealMeeting 会继续排空停止前已经入队的草稿和文件窗口。
+        if (stopRequested) return;
         const messageText = message?.header?.status_message || "ASR failed";
         console.error(`[asr] upstream task failed meeting=${meetingId}: ${messageText}`);
         safeSend({ type: "status", status: "upstream_reconnecting", reason: messageText });
@@ -716,6 +726,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       if (upstreamRotationTimer) { clearTimeout(upstreamRotationTimer); upstreamRotationTimer = null; }
       if (current._pingTimer) { clearInterval(current._pingTimer); current._pingTimer = null; }
       if (silenceKeepaliveTimer) { clearInterval(silenceKeepaliveTimer); silenceKeepaliveTimer = null; }
+      if (stopRequested) return;
       const reasonText = reason.toString();
       console.error(`[asr] upstream closed meeting=${meetingId} code=${code} reason=${reasonText || "none"}`);
       void flushTranscriptBuffer("upstream_close", { fallbackToPartial: true });
@@ -724,14 +735,14 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     });
 
     current.on("error", (error) => {
-      if (current !== upstream || upstreamStopped) return;
+      if (current !== upstream || upstreamStopped || stopRequested) return;
       console.error(`[asr] upstream error meeting=${meetingId}: `, error);
       safeSend({ type: "status", status: "upstream_reconnecting", reason: error.message });
     });
   }
 
   function scheduleUpstreamReconnect(reason = "upstream closed") {
-    if (upstreamStopped || client.readyState !== WebSocket.OPEN) return;
+    if (upstreamStopped || stopRequested || client.readyState !== WebSocket.OPEN) return;
     if (upstreamReconnectTimer) clearTimeout(upstreamReconnectTimer);
     upstreamReconnectAttempt += 1;
     const plan = getUpstreamReconnectPlan(reason, upstreamReconnectAttempt, config);
@@ -747,6 +758,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     });
     upstreamReconnectTimer = setTimeout(() => {
       upstreamReconnectTimer = null;
+      if (stopRequested) return;
       connectUpstream();
     }, delay);
   }
@@ -806,6 +818,19 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
       }
       if (text === "stop") {
         stopRequested = true;
+        clearPartialProgressTimer();
+        if (upstreamReconnectTimer) {
+          clearTimeout(upstreamReconnectTimer);
+          upstreamReconnectTimer = null;
+        }
+        if (upstreamRotationTimer) {
+          clearTimeout(upstreamRotationTimer);
+          upstreamRotationTimer = null;
+        }
+        if (asrNoFirstResultTimer) {
+          clearTimeout(asrNoFirstResultTimer);
+          asrNoFirstResultTimer = null;
+        }
         if (transcriptFlushTimer) {
           clearTimeout(transcriptFlushTimer);
           transcriptFlushTimer = null;
