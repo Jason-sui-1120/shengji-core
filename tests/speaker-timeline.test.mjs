@@ -27,6 +27,7 @@ const speakerGatewayModuleUrl = existsSync(new URL("../modules/speaker-gateway.m
 const {
   buildAitAuthorizationHeaders,
   executeDirectSpeakerDiarization,
+  executeSpeakerEmbeddingRequest,
 } = await import(speakerGatewayModuleUrl);
 const audioSignatureModuleUrl = existsSync(new URL("../modules/audio-access-signature.mjs", import.meta.url))
   ? new URL("../modules/audio-access-signature.mjs", import.meta.url)
@@ -69,6 +70,23 @@ test("说话人 embedding 响应必须归一化为可用于会议轨道的单位
   });
   assert.deepEqual(result, { embedding: [0.6, 0.8], confidence: 0.9 });
   assert.equal(normalizeSpeakerEmbeddingPayload({ embeddings: [] }), null);
+});
+
+test("单次说话人 embedding 无响应时会按时中止而不是悬挂后台任务", async () => {
+  const startedAt = Date.now();
+  const result = await executeSpeakerEmbeddingRequest("https://ait.example.com/v1/audio/speaker/embedding", {
+    model: "speaker-embedding",
+  }, {
+    timeoutMs: 20,
+    fetchImpl: (_url, init = {}) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 0);
+  assert.match(result.text, /abort/i);
+  assert.ok(Date.now() - startedAt < 500);
 });
 
 test("说话人回源失败时上传同一段 WAV 到 AIT 临时文件服务后重试", async () => {

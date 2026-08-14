@@ -1,5 +1,5 @@
 {
-  "version": "1.18.0",
+  "version": "1.18.1",
   "releasedAt": "2026-08-14",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -69,7 +69,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "e97b169e23547b1d58ed605e35a689b4489cb6c11b61b24ebe16cadb626b70da"
+      "sha256": "3b86a8f07871428d77d5ba3f795c7c7df67b2dda01b24ebd1ddeca55bacac639"
     },
     {
       "file": "model-routing.mjs",
@@ -101,7 +101,7 @@
     },
     {
       "file": "speaker-gateway.mjs",
-      "sha256": "2c93bdd985bb447e1221a88e19f65005da963cc7a5959b7b01f553b180817285"
+      "sha256": "5570918d40cdf163b3b91cea7ae5b7b1589493ae6d367153fe13ab5991e9e624"
     },
     {
       "file": "speaker-timeline.mjs",
@@ -137,7 +137,7 @@
     },
     {
       "file": "voice-cluster-service.mjs",
-      "sha256": "d26168fc327b1b8ee80e01ed602fc2c441dceaf1d853d3994bf19cb58430ceac"
+      "sha256": "814933395c96c1542a971c52a85fb17ea2163afcf1da6750eb9f20dffa3898e3"
     },
     {
       "file": "voice-cluster-store.mjs",
@@ -259,7 +259,7 @@
     },
     {
       "file": "speaker-timeline.test.mjs",
-      "sha256": "5cf194de76116ed4372709ecf9e1f2677783981fa070dda4b9ed585a2ee55744"
+      "sha256": "866b307b86775f5598e22f355441d80071c594529e9aaad5969af9ba9827b922"
     },
     {
       "file": "tail-stabilization.test.mjs",
@@ -387,7 +387,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "df1f92bb71b3f3af22820ec7e82f13648aa9f68c9b787d4eb473bdc5be94b725"
+      "sha256": "e8e734d7c48bd704bebf84d0f089bf12434152224e8f99a176ae4cb34a1beff0"
     },
     {
       "file": "README.md",

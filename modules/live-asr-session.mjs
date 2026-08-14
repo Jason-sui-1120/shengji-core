@@ -200,7 +200,7 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
     ASR_GLOSSARY_TIMEOUT_MS: 1_500,
     ROLLING_ASR_TIMEOUT_MS: 90_000,
     TAIL_STABILIZATION_TIMEOUT_MS: 60_000,
-    POST_MEETING_SPEAKER_TIMEOUT_MS: 15_000,
+    POST_MEETING_SPEAKER_TIMEOUT_MS: 45_000,
     ...deps.config,
   };
   if (!WebSocket || !Buffer || !randomUUID || !meetingLiveConnections) {

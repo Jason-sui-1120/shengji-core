@@ -99,34 +99,54 @@ export function buildAitAuthorizationHeaders(apiKey = AIT_API_KEY) {
   return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
 }
 
-export async function directSpeakerEmbedding(body) {
-  if (!AIT_API_KEY) {
-    return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
-  }
-  const response = await fetch(`${BELLA_API_BASE_URL}${AIT_SPEAKER_EMBEDDING_ENDPOINT}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...buildAitAuthorizationHeaders(),
-    },
-    body: JSON.stringify(body),
-  });
-  return toSpeakerResponse(response);
-}
-
-export async function callSpeakerEmbedding(body) {
-  if (AI_GATEWAY_BASE_URL) {
-    const response = await fetch(toGatewayHttpUrl("/gateway/speaker/embedding"), {
+export async function executeSpeakerEmbeddingRequest(url, body, {
+  timeoutMs = 8_000,
+  headers = {},
+  fetchImpl = fetch,
+} = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs || 8_000)));
+  try {
+    const response = await fetchImpl(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...getGatewayHeaders(),
+        ...headers,
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
     return toSpeakerResponse(response);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      requestId: "",
+      text: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
   }
-  return directSpeakerEmbedding(body);
+}
+
+export async function directSpeakerEmbedding(body, timeoutMs = 8_000) {
+  if (!AIT_API_KEY) {
+    return { ok: false, status: 500, text: JSON.stringify({ error: "AIT_API_KEY is not configured" }) };
+  }
+  return executeSpeakerEmbeddingRequest(`${BELLA_API_BASE_URL}${AIT_SPEAKER_EMBEDDING_ENDPOINT}`, body, {
+    timeoutMs,
+    headers: buildAitAuthorizationHeaders(),
+  });
+}
+
+export async function callSpeakerEmbedding(body, timeoutMs = 8_000) {
+  if (AI_GATEWAY_BASE_URL) {
+    return executeSpeakerEmbeddingRequest(toGatewayHttpUrl("/gateway/speaker/embedding"), body, {
+      timeoutMs,
+      headers: getGatewayHeaders(),
+    });
+  }
+  return directSpeakerEmbedding(body, timeoutMs);
 }
 
 export async function executeDirectSpeakerDiarization(body, {

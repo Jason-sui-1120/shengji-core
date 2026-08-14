@@ -59,7 +59,9 @@ export class VoiceClusterService {
     if (windows.length < 4) return { ok: false, meetingId: key, reason: "insufficient_voice_windows", windowCount: windows.length };
 
     // 3. 逐块提取声纹（并发 4 路）
-    const maxSamples = Math.max(12, Number(options.maxSamples || 400));
+    // 会后聚类是后台增强，不应把整场会议的所有语音窗逐一送去声纹服务。
+    // 均匀抽样 16 个窗口足以覆盖常见 2-6 人会议，并把最坏调用轮次固定为 4 批。
+    const maxSamples = Math.max(12, Number(options.maxSamples || 16));
     const sampled = windows.length <= maxSamples
       ? windows
       : Array.from({ length: maxSamples }, (_, i) => windows[Math.min(windows.length - 1, Math.floor(i * windows.length / maxSamples))]);
