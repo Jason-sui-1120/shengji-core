@@ -553,6 +553,10 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
   let correctionCalls = 0;
   const correctionAbortSignals = [];
   let forceCalls = 0;
+  let speakerReconciliationStarted = false;
+  let speakerReconciliationFinished = false;
+  let resolveSpeakerReconciliation;
+  const deferredSpeakerReconciliation = new Promise((resolve) => { resolveSpeakerReconciliation = resolve; });
   const deferredFirstCorrection = new Promise((resolve) => { resolveFirstCorrection = resolve; });
   const sealingClient = {
     readyState: FakeSocket.OPEN,
@@ -603,7 +607,12 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
     finalizeMeetingSourceAudio: async (_meetingId, status, options) => {
       events.push(`source-finalized:${status}:${Boolean(options?.force)}`);
     },
-    reconcileMeetingSpeakersFromSourceAudio: async () => ({ ok: true }),
+    reconcileMeetingSpeakersFromSourceAudio: async () => {
+      speakerReconciliationStarted = true;
+      const result = await deferredSpeakerReconciliation;
+      speakerReconciliationFinished = true;
+      return result;
+    },
     getAsrHotwordsForMeeting: () => [],
     getMeetingGlossaryEntries: () => [],
     uniqueStrings: (values) => [...new Set(values)],
@@ -703,5 +712,10 @@ test("结束会议必须排空正在执行的滚动尾窗后，才能兜底实�
   assert.equal(forceCalls, 1, "所有尾窗排空后才能用实时稿兜底");
   assert.ok(events.indexOf("force-realtime-fallback") > events.lastIndexOf(`file-window-${correctionCalls}`));
   assert.ok(events.includes("source-finalized:complete:true"), "用户主动结束必须强制封存完整源录音");
+  assert.equal(speakerReconciliationStarted, true, "完整录音封存后应启动会后说话人增强");
+  assert.equal(speakerReconciliationFinished, false, "会后说话人增强不得阻塞文字收口和结束会议");
+  resolveSpeakerReconciliation({ ok: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(speakerReconciliationFinished, true);
   sealingClient.handlers.get("close")();
 });

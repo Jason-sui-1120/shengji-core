@@ -1,6 +1,6 @@
 {
-  "version": "1.17.1",
-  "releasedAt": "2026-08-13",
+  "version": "1.18.0",
+  "releasedAt": "2026-08-14",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
     {
@@ -69,7 +69,7 @@
     },
     {
       "file": "live-asr-session.mjs",
-      "sha256": "3a33ce075a3a176d712c1048b8ac30acf1f94b264eec75527f027a3712baf477"
+      "sha256": "e97b169e23547b1d58ed605e35a689b4489cb6c11b61b24ebe16cadb626b70da"
     },
     {
       "file": "model-routing.mjs",
@@ -93,7 +93,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.mjs",
-      "sha256": "7533c72add204ee377481a8473826869a054a5f3e11a163ff143bccf1c5b26f7"
+      "sha256": "1b6fd7110de473adb6078b510f5b2cf366a32fe69171be3dae3111c75613f5e2"
     },
     {
       "file": "speaker-core.mjs",
@@ -113,7 +113,7 @@
     },
     {
       "file": "speakers.mjs",
-      "sha256": "8883d3736a1ebbba330c8030cbf288085265bedcadd8b4e16bdd3eb1f14be70c"
+      "sha256": "981f90eb8096153ae5b8bb6107e4250b10a9fc64e9a790b21acb17140f38dac7"
     },
     {
       "file": "tail-stabilization.mjs",
@@ -137,7 +137,7 @@
     },
     {
       "file": "voice-cluster-service.mjs",
-      "sha256": "020bd9c21c18e9e00955cdb53d6b3cb6f194d5c060ef81bcf60ed84e0c3f5afc"
+      "sha256": "d26168fc327b1b8ee80e01ed602fc2c441dceaf1d853d3994bf19cb58430ceac"
     },
     {
       "file": "voice-cluster-store.mjs",
@@ -239,7 +239,7 @@
     },
     {
       "file": "live-asr-session.test.mjs",
-      "sha256": "f89726613d1227dc3c72b86c7c5a2ac5a4d4b82ec58feb2e8fd5a430392551a6"
+      "sha256": "9ee61c1aebc1c58805a1236ac11d4290b0279b76d562ae87a2f87c979c18b0db"
     },
     {
       "file": "model-routing.test.mjs",
@@ -247,7 +247,7 @@
     },
     {
       "file": "meeting-speaker-track-manager.test.mjs",
-      "sha256": "c8bde8985b4145a5fa275870f3e7532dc98542dfc7e293aaf32e6a6d46e741ce"
+      "sha256": "ecce0aeb9a358a5062775197af917ab7c803bd8ffacc98cdcda599e4a20ddccd"
     },
     {
       "file": "rolling-service-consistency.test.mjs",
@@ -275,7 +275,7 @@
     },
     {
       "file": "voice-cluster.test.mjs",
-      "sha256": "3ace374ad63e9b300f59a40c6880f03598762280d36bbd0a572ad3e87c5b0d19"
+      "sha256": "144d8acb878b343f06fd678c819ac20a60bce988e58c712bdf4cd95966f94e84"
     },
     {
       "file": "asr-model-candidates.test.mjs",
@@ -383,11 +383,11 @@
     },
     {
       "file": "ARCHITECTURE.md",
-      "sha256": "6aee20d2e371bb2c9320a3584af02510e5f318f30bdd301f8089c2bdaf7641e5"
+      "sha256": "1baed769edf2ea86f8523a0912e333f4b496ec8999ec449dc8e0b6c4226e3047"
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "c07ba1b8a7be2c078836b52274de6e6e0e2913080f3010a16931c2d9ba7bf6ed"
+      "sha256": "df1f92bb71b3f3af22820ec7e82f13648aa9f68c9b787d4eb473bdc5be94b725"
     },
     {
       "file": "README.md",

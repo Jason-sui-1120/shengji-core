@@ -202,6 +202,7 @@ export async function identifySpeakerByEmbedding({ meetingId, wav, fallbackSpeak
       durationMs: Math.round(getWavDurationSeconds(wav) * 1000),
       evidenceCount: 1,
       source: "embedding",
+      allowProfileLearning: false,
     }],
   });
   return resolved ? {
@@ -248,6 +249,7 @@ export async function resolveDiarizedSpeakerTracks({ meetingId, wav, segments = 
       evidenceCount: group.segments.length,
       startMs: Math.round(longest.start * 1000),
       source: "rolling_diarization",
+      allowProfileLearning: true,
     });
   }
   return meetingSpeakerTrackManager.resolveBatch({ meetingId, observations, fallbackLabel: fallbackSpeaker });

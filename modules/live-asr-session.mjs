@@ -1106,18 +1106,21 @@ export async function createLiveAsrSession(client, clientUrl, deps) {
         reason === "stop" ? "complete" : "partial",
         { force: reason === "stop" },
       );
-      // 完整录音封存后再做一次会议级说话人校准。它不影响文字稳定化，但
-      // 最终纪要必须使用这次校准后的说话人轨道，而不是窗口临时标签。
-      try {
-        const speakerResult = await withTimeout(
+      // 完整录音封存后异步增强会议级说话人轨道。说话人聚类失败或变慢不能
+      // 阻塞文字收口、结束会议和首版纪要；成功后由 voice-cluster-service 的
+      // afterVoiceCluster 刷新快照与分析。任务内部有独立超时并完整接住异常。
+      void Promise.resolve()
+        .then(() => withTimeout(
           deps.reconcileMeetingSpeakersFromSourceAudio(meetingId),
           config.POST_MEETING_SPEAKER_TIMEOUT_MS,
           "post_meeting_speaker",
-        );
-        if (!speakerResult.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult.reason || speakerResult.message || "unknown"}`);
-      } catch (error) {
-        console.error(`[post-meeting-speaker] failed meeting=${meetingId}: `, error);
-      }
+        ))
+        .then((speakerResult) => {
+          if (!speakerResult?.ok) console.warn(`[post-meeting-speaker] skipped meeting=${meetingId}: ${speakerResult?.reason || speakerResult?.message || "unknown"}`);
+        })
+        .catch((error) => {
+          console.error(`[post-meeting-speaker] failed meeting=${meetingId}: `, error);
+        });
       const draftCount = await countDraftTranscripts(meetingId);
       const hasPendingRollingRetry = failedRollingWindows.some((window) => Number(window.attempt || 0) < deps.config.ROLLING_ASR_MAX_RETRIES);
       // 文件校准可能因边界/低置信度而没有可重试窗口，但仍留下少量 draft。

@@ -84,6 +84,45 @@ test("短实时声纹不污染首号，首个可靠文件轨道仍建立为说�
   assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 1);
 });
 
+test("实时弱声纹可匹配已有说话人但不得改写已确认画像", async () => {
+  const originalVector = [1, 0, 0, 0];
+  const store = createMemoryStore([{
+    label: "说话人 1",
+    sampleCount: 5,
+    featuresJson: JSON.stringify({ kind: "embedding", vector: originalVector, status: "confirmed", totalSpeechMs: 20_000 }),
+  }]);
+  const manager = createMeetingSpeakerTrackManager(store);
+  const [realtime] = await manager.resolveBatch({
+    meetingId: 12,
+    observations: [{
+      key: "realtime-weak",
+      embedding: [0.8, 0.6, 0, 0],
+      durationMs: 1_200,
+      source: "embedding",
+      allowProfileLearning: false,
+    }],
+  });
+
+  assert.equal(realtime.speaker, "说话人 1");
+  assert.equal(realtime.status, "confirmed");
+  assert.equal(store.rows[0].sampleCount, 5);
+  assert.deepEqual(JSON.parse(store.rows[0].featuresJson).vector, originalVector);
+
+  await manager.resolveBatch({
+    meetingId: 12,
+    observations: [{
+      key: "stable-track",
+      embedding: [0.8, 0.6, 0, 0],
+      durationMs: 8_000,
+      evidenceCount: 3,
+      source: "rolling_diarization",
+      allowProfileLearning: true,
+    }],
+  });
+  assert.equal(store.rows[0].sampleCount, 6, "可靠文件轨道仍应更新已确认画像");
+  assert.notDeepEqual(JSON.parse(store.rows[0].featuresJson).vector, originalVector);
+});
+
 test("短时不匹配声纹只建隐藏候选，沿用当前人且不爆增可见人数", async () => {
   const store = createMemoryStore([{
     label: "说话人 1",
@@ -163,6 +202,45 @@ test("单次短发言仍只进入隐藏候选，避免噪声制造新人", async
   assert.equal(result.status, "provisional");
   assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 1);
   assert.equal(store.rows.filter((row) => row.label.startsWith("__candidate_")).length, 1);
+});
+
+test("重复实时弱声纹不会把隐藏候选晋升为正式说话人", async () => {
+  const store = createMemoryStore();
+  const manager = createMeetingSpeakerTrackManager(store);
+  for (const key of ["draft-1", "draft-2", "draft-3", "draft-4"]) {
+    const [result] = await manager.resolveBatch({
+      meetingId: 35,
+      observations: [{
+        key,
+        embedding: vector(1),
+        durationMs: 3_000,
+        evidenceCount: 1,
+        source: "realtime_embedding",
+        allowProfileLearning: false,
+      }],
+    });
+    assert.equal(result.speaker, "说话人 1");
+    assert.equal(result.status, "provisional");
+  }
+  assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 0);
+  assert.equal(store.rows.filter((row) => row.label.startsWith("__candidate_")).length, 1);
+  assert.equal(store.rows.find((row) => row.label.startsWith("__candidate_"))?.sampleCount, 1);
+
+  const [confirmed] = await manager.resolveBatch({
+    meetingId: 35,
+    observations: [{
+      key: "stable-track",
+      embedding: vector(1),
+      durationMs: 7_000,
+      longestContinuousMs: 7_000,
+      evidenceCount: 2,
+      source: "rolling_diarization",
+      allowProfileLearning: true,
+    }],
+  });
+  assert.equal(confirmed.speaker, "说话人 1");
+  assert.equal(confirmed.status, "confirmed");
+  assert.equal(store.rows.filter((row) => row.label.startsWith("说话人 ")).length, 1);
 });
 
 test("分离模型把同一人拆成两条高相似轨道时复用同一会议说话人", async () => {

@@ -79,6 +79,17 @@ function provisionalFallback(confirmed, fallbackLabel) {
   return String(confirmed.at(-1)?.label || confirmed[0]?.label || "说话人 1");
 }
 
+function canLearnConfirmedProfile(observation) {
+  if (typeof observation?.allowProfileLearning === "boolean") {
+    return observation.allowProfileLearning;
+  }
+  // 兼容旧调用方时只信任文件级/会后强证据。实时短片段仍可匹配并即时显示
+  // 已有说话人，但不能反向改写已确认画像，否则咳嗽、串音和截断句会逐步
+  // 把会议级声纹中心拖偏。
+  return observation?.source === "rolling_diarization"
+    || observation?.source === "post_meeting_voice_cluster";
+}
+
 /**
  * 创建一个使用端侧 speaker-store 的会议轨道管理器。
  * store 方法与现有 SQLite/MySQL speaker-store 契约一致。
@@ -137,19 +148,24 @@ export function createMeetingSpeakerTrackManager(store, options = {}) {
 
       if (matchedWinner) {
         const profile = matchedWinner.profile;
-        const nextCount = Math.max(1, Number(profile.sampleCount || 1)) + 1;
-        const merged = mergeEmbeddingVector(profile.profile.vector, observation.embedding, profile.sampleCount);
-        await store.setProfileFeatures(
-          null,
-          profile.id,
-          buildProfileJson(merged, profile.profile, {
+        if (canLearnConfirmedProfile(observation)) {
+          const nextCount = Math.max(1, Number(profile.sampleCount || 1)) + 1;
+          const merged = mergeEmbeddingVector(profile.profile.vector, observation.embedding, profile.sampleCount);
+          const updatedProfileJson = buildProfileJson(merged, profile.profile, {
             status: "confirmed",
             totalSpeechMs: Number(profile.profile.totalSpeechMs || 0) + observation.durationMs,
             lastSource: observation.source || "embedding",
-          }),
-          nextCount,
-          new Date().toISOString(),
-        );
+          });
+          await store.setProfileFeatures(
+            null,
+            profile.id,
+            updatedProfileJson,
+            nextCount,
+            new Date().toISOString(),
+          );
+          profile.profile = safeParseJson(updatedProfileJson);
+          profile.sampleCount = nextCount;
+        }
         usedConfirmedIds.add(Number(profile.id));
         results.push({
           key: observation.key,
@@ -196,6 +212,20 @@ export function createMeetingSpeakerTrackManager(store, options = {}) {
       const candidateWinner = candidateRanked[0] || null;
       if (candidateWinner && candidateWinner.similarity >= settings.candidateThreshold) {
         const candidate = candidateWinner.profile;
+        // 实时弱声纹只用于当前界面的临时归属，不能累计隐藏候选、晋升正式轨道，
+        // 否则同一人的连续实时短句会在可靠的 45 秒分离结果到来前制造新人。
+        // 文件分离或会后聚类等强观察仍可接管该候选并完成晋升。
+        if (!canLearnConfirmedProfile(observation)) {
+          results.push({
+            key: observation.key,
+            speaker: provisionalFallback(confirmed, fallbackLabel),
+            confidence: clampConfidence(Math.min(54, candidateWinner.similarity * 100)),
+            source: "realtime_provisional",
+            status: "provisional",
+            similarity: candidateWinner.similarity,
+          });
+          continue;
+        }
         const nextCount = Math.max(1, Number(candidate.sampleCount || 1)) + 1;
         const merged = mergeEmbeddingVector(candidate.profile.vector, observation.embedding, candidate.sampleCount);
         const totalSpeechMs = Number(candidate.profile.totalSpeechMs || 0) + observation.durationMs;

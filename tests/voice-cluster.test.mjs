@@ -1,13 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
+import { existsSync } from "node:fs";
+
+// 同一测试会复制到消费端 server/；兼容 core 源目录与端侧目录。
+const voiceClusterModuleUrl = existsSync(new URL("../modules/voice-cluster.mjs", import.meta.url))
+  ? new URL("../modules/voice-cluster.mjs", import.meta.url)
+  : new URL("./voice-cluster.mjs", import.meta.url);
+const {
   normalizeVector,
   cosineSimilarity,
   buildVoiceWindows,
   clusterVoiceEmbeddings,
   assignTranscriptSpeakers,
   MERGE_MORE_PARAMS,
-} from "./voice-cluster.mjs";
+} = await import(voiceClusterModuleUrl);
 
 test("normalizeVector 归一化为单位向量", () => {
   const v = normalizeVector([3, 4]);
@@ -79,4 +85,35 @@ test("assignTranscriptSpeakers 无覆盖时保持待识别", () => {
   const assignments = [{ startSeconds: 0, endSeconds: 4, clusterId: "cluster_1", accepted: true }];
   const result = assignTranscriptSpeakers(transcripts, assignments);
   assert.equal(result[0].proposedSpeaker, "待识别");
+});
+
+test("assignTranscriptSpeakers 不因 250ms 局部碰触覆盖整行", () => {
+  const transcripts = [{ audioStartMs: 0, audioEndMs: 10_000, text: "长行只被局部碰到" }];
+  const assignments = [{ startSeconds: 0, endSeconds: 3, clusterId: "说话人 1", accepted: true }];
+  const [result] = assignTranscriptSpeakers(transcripts, assignments);
+  assert.equal(result.proposedSpeaker, "待识别");
+  assert.equal(result.diagnostics.coverage, 0.3);
+});
+
+test("assignTranscriptSpeakers 覆盖充分且主导明确时才回填整行", () => {
+  const transcripts = [{ audioStartMs: 0, audioEndMs: 10_000, text: "主要由第二个人发言" }];
+  const assignments = [
+    { startSeconds: 0, endSeconds: 2.5, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 2.5, endSeconds: 10, clusterId: "说话人 2", accepted: true },
+  ];
+  const [result] = assignTranscriptSpeakers(transcripts, assignments);
+  assert.equal(result.proposedSpeaker, "说话人 2");
+  assert.equal(result.diagnostics.coverage, 1);
+  assert.equal(result.diagnostics.dominance, 0.75);
+});
+
+test("assignTranscriptSpeakers 两人均分一行时保持待识别", () => {
+  const transcripts = [{ audioStartMs: 0, audioEndMs: 10_000, text: "两人各说一半" }];
+  const assignments = [
+    { startSeconds: 0, endSeconds: 5, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 5, endSeconds: 10, clusterId: "说话人 2", accepted: true },
+  ];
+  const [result] = assignTranscriptSpeakers(transcripts, assignments);
+  assert.equal(result.proposedSpeaker, "待识别");
+  assert.equal(result.diagnostics.dominance, 0.5);
 });

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import { hasAiAccess } from "./speaker-core.mjs";
 import { sliceWavBySeconds } from "./audio-utils.mjs";
 import {
-  buildVoiceWindows, clusterVoiceEmbeddings, cosineSimilarity as voiceCosineSimilarity,
+  assignTranscriptSpeakers, buildVoiceWindows, clusterVoiceEmbeddings, cosineSimilarity as voiceCosineSimilarity,
 } from "./voice-cluster.mjs";
 
 /**
@@ -165,6 +165,7 @@ export class VoiceClusterService {
           startMs: Math.round(Number(firstSeen || 0) * 1000),
           source: "post_meeting_voice_cluster",
           confirmNewTrack: true,
+          allowProfileLearning: true,
         };
       }),
     });
@@ -186,17 +187,32 @@ export class VoiceClusterService {
 
     // 7. 回填数据库（原子应用：删旧 turns + 插入新 turns + 更新 transcripts + bump revision）
     const rows = stableRows;
+    const speakerWindows = finalAccepted
+      .map((item) => ({
+        ...item,
+        clusterId: labelByCluster.get(item.clusterId) || "待识别",
+      }))
+      .filter((item) => item.clusterId !== "待识别");
+    const proposedRows = assignTranscriptSpeakers(rows, speakerWindows, {
+      minCoverage: Number(options.minAssignmentCoverage ?? 0.45),
+      minDominance: Number(options.minAssignmentDominance ?? 0.62),
+    });
     const assignments = [];
-    for (const row of rows) {
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
       if (row.userEdited || row.speakerSource === "manual") continue;
-      let winner = null;
-      let bestOverlap = 0;
-      for (const turn of turns) {
-        if (turn.speaker === "待识别") continue;
-        const overlap = Math.max(0, Math.min(Number(row.audioEndMs || 0), turn.endMs) - Math.max(Number(row.audioStartMs || 0), turn.startMs));
-        if (overlap > bestOverlap) { winner = turn; bestOverlap = overlap; }
+      const proposal = proposedRows[index];
+      if (!proposal || proposal.proposedSpeaker === "待识别") continue;
+      const winner = {
+        speaker: proposal.proposedSpeaker,
+        confidence: proposal.proposedConfidence,
+        startMs: Number(row.audioStartMs || 0),
+        endMs: Number(row.audioEndMs || 0),
+        diagnostics: proposal.diagnostics,
+      };
+      if (row.speaker !== winner.speaker || row.speakerSource !== "post_meeting_voice_cluster") {
+        assignments.push({ row, winner });
       }
-      if (winner && bestOverlap >= 250 && (row.speaker !== winner.speaker || row.speakerSource !== "post_meeting_voice_cluster")) assignments.push({ row, winner });
     }
     const applied = await this.store.applyVoiceClusterAssignments(key, { turns, assignments });
 
