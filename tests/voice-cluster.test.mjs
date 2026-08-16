@@ -58,16 +58,16 @@ test("buildVoiceWindows 遇到临时说话人切换时强制断窗", () => {
   assert.deepEqual(windows.map((window) => window.text), ["甲说", "乙说"]);
 });
 
-test("selectVoiceWindowSamples 在固定预算内覆盖每个主要临时标签", () => {
+test("selectVoiceWindowSamples 在固定预算内为每个主要临时标签保留聚类所需证据", () => {
   const windows = [];
   for (let index = 0; index < 40; index += 1) {
     const legacySpeaker = `说话人 ${Math.floor(index / 10) + 1}`;
     windows.push({ startSeconds: index * 5, endSeconds: index * 5 + 3, text: String(index), legacySpeaker });
   }
-  const sampled = selectVoiceWindowSamples(windows, 16, { minPerLabel: 2 });
+  const sampled = selectVoiceWindowSamples(windows, 16, { minPerLabel: 4 });
   assert.equal(sampled.length, 16);
   for (const label of ["说话人 1", "说话人 2", "说话人 3", "说话人 4"]) {
-    assert.ok(sampled.filter((window) => window.legacySpeaker === label).length >= 2, `${label} 应至少有 2 个样本`);
+    assert.equal(sampled.filter((window) => window.legacySpeaker === label).length, 4, `${label} 应有 4 个样本`);
   }
   assert.deepEqual([...sampled].sort((a, b) => a.startSeconds - b.startSeconds), sampled);
 });

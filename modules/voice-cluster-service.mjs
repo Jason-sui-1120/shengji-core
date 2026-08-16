@@ -65,10 +65,13 @@ export class VoiceClusterService {
     if (windows.length < 4) return { ok: false, meetingId: key, reason: "insufficient_voice_windows", windowCount: windows.length };
 
     // 3. 逐块提取声纹（并发 4 路）
-    // 会后聚类是后台增强，不应把整场会议的所有语音窗逐一送去声纹服务。
-    // 固定 16 个窗口：先覆盖已有临时标签，再均匀补齐全场，把最坏调用轮次固定为 4 批。
-    const maxSamples = Math.max(12, Number(options.maxSamples || 16));
-    const sampled = selectVoiceWindowSamples(windows, maxSamples, { minPerLabel: 2 });
+    // 会后聚类是后台增强，不把整场会议的所有语音窗逐一送去声纹服务。
+    // 但每个主要临时标签至少需要达到聚类的 4 样本证据门槛；16 个样本在四人会议中
+    // 无法同时兼顾每人证据与全场均匀覆盖。默认提高到 32，同时严格封顶32（最多 8 批）。
+    const requestedMaxSamples = Number(options.maxSamples ?? 32);
+    const maxSamples = Math.min(32, Math.max(12, Number.isFinite(requestedMaxSamples) ? Math.floor(requestedMaxSamples) : 32));
+    const minClusterSamples = Math.max(2, Math.floor(Number(options.minClusterSamples ?? 4)));
+    const sampled = selectVoiceWindowSamples(windows, maxSamples, { minPerLabel: minClusterSamples });
     console.log(`[voice-cluster] meeting=${key} windows=${windows.length} sampled=${sampled.length} extracting embeddings...`);
 
     // 3a. 加载会议内已缓存的声纹
@@ -89,13 +92,13 @@ export class VoiceClusterService {
         const cached = embeddingCache.get(cacheKey);
         if (cached?.length) {
           cacheHits += 1;
-          return { startSeconds: win.startSeconds, endSeconds: win.endSeconds, text: win.text, vector: cached };
+          return { startSeconds: win.startSeconds, endSeconds: win.endSeconds, text: win.text, legacySpeaker: win.legacySpeaker, vector: cached };
         }
         const clip = sliceWavBySeconds(wav, win.startSeconds, win.endSeconds);
         const emb = await this.extractSpeakerEmbedding(clip, key);
         if (emb?.embedding?.length) {
           newEmbeddings.push({ startMs, endMs, vector: emb.embedding });
-          return { startSeconds: win.startSeconds, endSeconds: win.endSeconds, text: win.text, vector: emb.embedding };
+          return { startSeconds: win.startSeconds, endSeconds: win.endSeconds, text: win.text, legacySpeaker: win.legacySpeaker, vector: emb.embedding };
         }
         return null;
       }));
@@ -125,7 +128,6 @@ export class VoiceClusterService {
       clusterStats.set(a.clusterId, stat);
     }
     const minClusterSeconds = Number(options.minClusterSeconds ?? 30);
-    const minClusterSamples = Number(options.minClusterSamples ?? 4);
     const bigClusters = new Set();
     for (const [cid, stat] of clusterStats) {
       if (stat.seconds >= minClusterSeconds || stat.count >= minClusterSamples) bigClusters.add(cid);
@@ -245,6 +247,8 @@ export class VoiceClusterService {
       meetingId: key,
       method: "voice_cluster",
       windowCount: windows.length,
+      sampleBudget: maxSamples,
+      minClusterSamples,
       sampleCount: samples.length,
       clusterCount: clustered.clusters.length,
       unknownCount: clustered.assignments.length - finalAccepted.length,
