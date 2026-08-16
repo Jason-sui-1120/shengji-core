@@ -175,3 +175,91 @@ export function assignTranscriptSpeakers(transcripts, assignments, options = {})
     };
   });
 }
+
+/**
+ * 先按绝对时间直接回填，再用已确认样本把会中产生的“临时说话人标签”收敛到
+ * 会后确认的会议级标签。这样不需要为了覆盖整场会议再调用数十次声纹服务，
+ * 也不会只更新抽样命中的少量行、让旧的说话人 3/4 长期残留在页面上。
+ *
+ * 传播只适用于非人工、非“待识别”标签；同一旧标签至少需要两行证据（只有
+ * 一行的标签则要求该行本身被直接命中），且证据必须明显指向同一个最终说话人。
+ * 时间直接命中的结果始终优先于标签传播。
+ */
+export function assignTranscriptSpeakersWithLabelPropagation(transcripts, assignments, options = {}) {
+  const rows = Array.isArray(transcripts) ? transcripts : [];
+  const direct = assignTranscriptSpeakers(rows, assignments, options);
+  const minLabelDominance = Number(options.minLabelDominance ?? 0.78);
+  const minEvidenceRows = Math.max(1, Number(options.minEvidenceRows ?? 2));
+  const pendingLabels = new Set(["", "待识别", "实时"]);
+  const totalsByLegacyLabel = new Map();
+  const evidenceByLegacyLabel = new Map();
+
+  for (const row of rows) {
+    const legacyLabel = String(row?.speaker || "").trim();
+    if (row?.userEdited || row?.speakerSource === "manual" || pendingLabels.has(legacyLabel)) continue;
+    totalsByLegacyLabel.set(legacyLabel, (totalsByLegacyLabel.get(legacyLabel) || 0) + 1);
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const proposal = direct[index];
+    const legacyLabel = String(row?.speaker || "").trim();
+    const canonicalLabel = String(proposal?.proposedSpeaker || "").trim();
+    if (
+      row?.userEdited
+      || row?.speakerSource === "manual"
+      || pendingLabels.has(legacyLabel)
+      || pendingLabels.has(canonicalLabel)
+    ) continue;
+    const durationSeconds = Math.max(0.001, (Number(row?.audioEndMs || 0) - Number(row?.audioStartMs || 0)) / 1000);
+    const coverage = Math.max(0, Number(proposal?.diagnostics?.coverage || 0));
+    const dominance = Math.max(0, Number(proposal?.diagnostics?.dominance || 0));
+    const weight = durationSeconds * Math.max(0.05, coverage * dominance);
+    const legacyEvidence = evidenceByLegacyLabel.get(legacyLabel) || { rowIndexes: new Set(), byCanonical: new Map() };
+    const canonicalEvidence = legacyEvidence.byCanonical.get(canonicalLabel) || { weight: 0, confidenceTotal: 0, count: 0 };
+    canonicalEvidence.weight += weight;
+    canonicalEvidence.confidenceTotal += Number(proposal?.proposedConfidence || 0);
+    canonicalEvidence.count += 1;
+    legacyEvidence.rowIndexes.add(index);
+    legacyEvidence.byCanonical.set(canonicalLabel, canonicalEvidence);
+    evidenceByLegacyLabel.set(legacyLabel, legacyEvidence);
+  }
+
+  const canonicalByLegacyLabel = new Map();
+  for (const [legacyLabel, evidence] of evidenceByLegacyLabel) {
+    const ranked = [...evidence.byCanonical.entries()].sort((left, right) => right[1].weight - left[1].weight);
+    const winner = ranked[0];
+    if (!winner) continue;
+    const totalWeight = ranked.reduce((sum, item) => sum + item[1].weight, 0);
+    const labelDominance = winner[1].weight / Math.max(0.001, totalWeight);
+    const totalRows = Number(totalsByLegacyLabel.get(legacyLabel) || 0);
+    const requiredEvidenceRows = totalRows <= 1 ? 1 : Math.min(minEvidenceRows, totalRows);
+    if (evidence.rowIndexes.size < requiredEvidenceRows || labelDominance < minLabelDominance) continue;
+    canonicalByLegacyLabel.set(legacyLabel, {
+      speaker: winner[0],
+      confidence: Math.round(winner[1].confidenceTotal / Math.max(1, winner[1].count)),
+      evidenceRows: evidence.rowIndexes.size,
+      dominance: Number(labelDominance.toFixed(3)),
+    });
+  }
+
+  return direct.map((proposal, index) => {
+    if (proposal?.proposedSpeaker && !pendingLabels.has(String(proposal.proposedSpeaker).trim())) return proposal;
+    const row = rows[index];
+    if (row?.userEdited || row?.speakerSource === "manual") return proposal;
+    const legacyLabel = String(row?.speaker || "").trim();
+    const canonical = canonicalByLegacyLabel.get(legacyLabel);
+    if (!canonical) return proposal;
+    return {
+      ...proposal,
+      proposedSpeaker: canonical.speaker,
+      proposedConfidence: Math.max(55, Math.min(90, canonical.confidence)),
+      diagnostics: {
+        ...(proposal?.diagnostics || {}),
+        propagatedFromLabel: legacyLabel,
+        labelEvidenceRows: canonical.evidenceRows,
+        labelDominance: canonical.dominance,
+      },
+    };
+  });
+}

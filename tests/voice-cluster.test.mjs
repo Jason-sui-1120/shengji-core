@@ -12,6 +12,7 @@ const {
   buildVoiceWindows,
   clusterVoiceEmbeddings,
   assignTranscriptSpeakers,
+  assignTranscriptSpeakersWithLabelPropagation,
   MERGE_MORE_PARAMS,
 } = await import(voiceClusterModuleUrl);
 
@@ -116,4 +117,51 @@ test("assignTranscriptSpeakers 两人均分一行时保持待识别", () => {
   const [result] = assignTranscriptSpeakers(transcripts, assignments);
   assert.equal(result.proposedSpeaker, "待识别");
   assert.equal(result.diagnostics.dominance, 0.5);
+});
+
+test("会后样本可把同一旧标签的未抽样行收敛到会议级说话人", () => {
+  const transcripts = [
+    { id: 1, audioStartMs: 0, audioEndMs: 4000, speaker: "说话人 3", speakerSource: "diarization", text: "样本一" },
+    { id: 2, audioStartMs: 5000, audioEndMs: 9000, speaker: "说话人 3", speakerSource: "diarization", text: "样本二" },
+    { id: 3, audioStartMs: 10_000, audioEndMs: 14_000, speaker: "说话人 3", speakerSource: "diarization", text: "未抽样行" },
+  ];
+  const windows = [
+    { startSeconds: 0, endSeconds: 4, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 5, endSeconds: 9, clusterId: "说话人 1", accepted: true },
+  ];
+  const result = assignTranscriptSpeakersWithLabelPropagation(transcripts, windows);
+  assert.deepEqual(result.map((row) => row.proposedSpeaker), ["说话人 1", "说话人 1", "说话人 1"]);
+  assert.equal(result[2].diagnostics.propagatedFromLabel, "说话人 3");
+});
+
+test("旧标签证据分裂时不向未抽样行传播错误身份", () => {
+  const transcripts = [
+    { id: 1, audioStartMs: 0, audioEndMs: 4000, speaker: "说话人 3", speakerSource: "diarization", text: "甲" },
+    { id: 2, audioStartMs: 5000, audioEndMs: 9000, speaker: "说话人 3", speakerSource: "diarization", text: "乙" },
+    { id: 3, audioStartMs: 10_000, audioEndMs: 14_000, speaker: "说话人 3", speakerSource: "diarization", text: "未知" },
+  ];
+  const windows = [
+    { startSeconds: 0, endSeconds: 4, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 5, endSeconds: 9, clusterId: "说话人 2", accepted: true },
+  ];
+  const result = assignTranscriptSpeakersWithLabelPropagation(transcripts, windows);
+  assert.deepEqual(result.map((row) => row.proposedSpeaker), ["说话人 1", "说话人 2", "待识别"]);
+  assert.equal(result[2].diagnostics.propagatedFromLabel, undefined);
+});
+
+test("待识别和人工说话人不会被标签传播覆盖", () => {
+  const transcripts = [
+    { id: 1, audioStartMs: 0, audioEndMs: 4000, speaker: "待识别", speakerSource: "pending", text: "未知一" },
+    { id: 2, audioStartMs: 5000, audioEndMs: 9000, speaker: "待识别", speakerSource: "pending", text: "未知二" },
+    { id: 3, audioStartMs: 10_000, audioEndMs: 14_000, speaker: "主持人", speakerSource: "manual", userEdited: 1, text: "人工" },
+  ];
+  const windows = [
+    { startSeconds: 0, endSeconds: 4, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 5, endSeconds: 9, clusterId: "说话人 1", accepted: true },
+    { startSeconds: 10, endSeconds: 14, clusterId: "说话人 2", accepted: true },
+  ];
+  const result = assignTranscriptSpeakersWithLabelPropagation(transcripts, windows);
+  assert.deepEqual(result.map((row) => row.proposedSpeaker), ["说话人 1", "说话人 1", "说话人 2"]);
+  assert.equal(result[0].diagnostics.propagatedFromLabel, undefined);
+  assert.equal(result[2].diagnostics.propagatedFromLabel, undefined);
 });

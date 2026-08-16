@@ -7,7 +7,7 @@ import fs from "node:fs";
 import { hasAiAccess } from "./speaker-core.mjs";
 import { sliceWavBySeconds } from "./audio-utils.mjs";
 import {
-  assignTranscriptSpeakers, buildVoiceWindows, clusterVoiceEmbeddings, cosineSimilarity as voiceCosineSimilarity,
+  assignTranscriptSpeakersWithLabelPropagation, buildVoiceWindows, clusterVoiceEmbeddings, cosineSimilarity as voiceCosineSimilarity,
 } from "./voice-cluster.mjs";
 
 /**
@@ -195,11 +195,14 @@ export class VoiceClusterService {
         clusterId: labelByCluster.get(item.clusterId) || "待识别",
       }))
       .filter((item) => item.clusterId !== "待识别");
-    const proposedRows = assignTranscriptSpeakers(rows, speakerWindows, {
+    const proposedRows = assignTranscriptSpeakersWithLabelPropagation(rows, speakerWindows, {
       minCoverage: Number(options.minAssignmentCoverage ?? 0.45),
       minDominance: Number(options.minAssignmentDominance ?? 0.62),
+      minLabelDominance: Number(options.minLabelDominance ?? 0.78),
+      minEvidenceRows: Number(options.minLabelEvidenceRows ?? 2),
     });
     const assignments = [];
+    let propagatedCount = 0;
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
       if (row.userEdited || row.speakerSource === "manual") continue;
@@ -214,6 +217,7 @@ export class VoiceClusterService {
       };
       if (row.speaker !== winner.speaker || row.speakerSource !== "post_meeting_voice_cluster") {
         assignments.push({ row, winner });
+        if (proposal?.diagnostics?.propagatedFromLabel) propagatedCount += 1;
       }
     }
     const applied = await this.store.applyVoiceClusterAssignments(key, { turns, assignments });
@@ -234,6 +238,8 @@ export class VoiceClusterService {
       speakerCount: new Set(turns.map((t) => t.speaker).filter((s) => s !== "待识别")).size,
       turnCount: turns.length,
       updatedCount: applied.updatedCount,
+      propagatedCount,
+      transcriptCoverage: Number((assignments.length / Math.max(1, rows.filter((row) => !row.userEdited && row.speakerSource !== "manual").length)).toFixed(3)),
       stableRevision: applied.stableRevision,
     };
   }
