@@ -1,5 +1,5 @@
 {
-  "version": "1.18.4",
+  "version": "1.18.5",
   "releasedAt": "2026-08-16",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -129,7 +129,7 @@
     },
     {
       "file": "transcript-composer.mjs",
-      "sha256": "45fa6405ba300bd032f834de397d765469a02689fdfea86383dcaa95f3858a43"
+      "sha256": "103ec5fc7debb81e10fba28dfdc306f9571b346004365355f1ba461d3377cd87"
     },
     {
       "file": "transcript-coverage.mjs",
@@ -137,7 +137,7 @@
     },
     {
       "file": "voice-cluster-service.mjs",
-      "sha256": "6c8ebdf77fe4d6a29e441bd07712367355ece73f990fa009cab5cd60b2519c21"
+      "sha256": "e510aa18b98d29dc96a33199aecdf9d6dbf677683aa39e1630645e4a31462e80"
     },
     {
       "file": "voice-cluster-store.mjs",
@@ -267,11 +267,15 @@
     },
     {
       "file": "transcript-composer.test.mjs",
-      "sha256": "19872132a57de27bad6a933ab0ebac737549d56446a57d35423b64ad29a35e32"
+      "sha256": "914a747a70dd272c3910956451803373afb71e0b036e46c5fd9c8db0543de4e3"
     },
     {
       "file": "transcript-coverage.test.mjs",
       "sha256": "e8cf44af2975c9e3545d8a0d4e0c935e214a317ccb53503dea9b4fb457ad7aff"
+    },
+    {
+      "file": "voice-cluster-service-policy.test.mjs",
+      "sha256": "5753f3a923b4227fc19324d336ac1bc0e49b316bcb223d3065261b9cb0822bc4"
     },
     {
       "file": "voice-cluster.test.mjs",
@@ -387,7 +391,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "sha256": "43baada4cfe512f749ec899c62b339b49c4d7627db17e5dbb054247429d1c267"
+      "sha256": "e6039c8cdcd209cdb023336e992093cd74b653cf921865e7f91e6be3cf59ec7b"
     },
     {
       "file": "README.md",

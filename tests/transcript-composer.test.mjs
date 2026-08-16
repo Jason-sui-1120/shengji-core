@@ -82,6 +82,78 @@ test("新窗口开头重复上一稳定稿尾部时先去重，再执行时间�
   assert.ok(result[0].startMs > 45_000);
 });
 
+test("边界重复有少量同音漏字时仍按连续前后缀裁掉", () => {
+  const result = composeCanonicalFileSegments([{
+    text: "房产证的五证会给大家进行公示，请你们现在放心，然后继续介绍优惠方案。",
+    startMs: 45_000,
+    endMs: 52_000,
+  }], {
+    windowStartMs: 45_000,
+    windowEndMs: 90_000,
+    precedingRows: [{
+      text: "房产证儿的五证呢会给大家进行公示，请你们现在放心。",
+      audioEndMs: 45_000,
+      speakerSource: "file_asr",
+    }],
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].text, "然后继续介绍优惠方案。");
+});
+
+test("上一稿后缀比候选前缀略长时仍可识别同音重复", () => {
+  const result = composeCanonicalFileSegments([{
+    text: "所以有些人不要找咱那个客观里，我说咱这房子不太好，咱这是房子是五四层，那五层马上也下来，你说这这一正正在正在办。底。",
+    startMs: 45_000,
+    endMs: 50_000,
+  }], {
+    windowStartMs: 45_000,
+    windowEndMs: 90_000,
+    precedingRows: [{
+      text: "好多都是四三证，人家房子照样卖。所以有些人不要找咱那个客观理由说咱这个房子不太好，咱这是房子是五四证，这五证马上也下来，你说这这一证不是正在正在办理。",
+      audioEndMs: 45_000,
+      speakerSource: "file_asr",
+    }],
+  });
+  assert.deepEqual(result, []);
+});
+
+test("短语气词不能阻断后续候选与上一稳定稿的边界消重", () => {
+  const result = composeCanonicalFileSegments([
+    { text: "对吧。", startMs: 45_000, endMs: 45_250 },
+    {
+      text: "你说说着说着，是我们后期会把这个五证，再继续说明优惠方案。",
+      startMs: 45_250,
+      endMs: 51_000,
+    },
+  ], {
+    windowStartMs: 45_000,
+    windowEndMs: 90_000,
+    precedingRows: [{
+      text: "你们做销售不能把这个疑虑打消。你说说着说着，是我们后期会把这个五中。",
+      audioEndMs: 45_000,
+      speakerSource: "file_asr",
+    }],
+  });
+  assert.deepEqual(result.map((item) => item.text), ["对吧。", "再继续说明优惠方案。"]);
+});
+
+test("边界后一段时间真实复述相同内容时不得删除", () => {
+  const result = composeCanonicalFileSegments([{
+    text: "完成业务验收，然后安排上线验证。",
+    startMs: 47_000,
+    endMs: 51_000,
+  }], {
+    windowStartMs: 45_000,
+    windowEndMs: 90_000,
+    precedingRows: [{
+      text: "完成业务验收。",
+      audioEndMs: 45_000,
+      speakerSource: "file_asr",
+    }],
+  });
+  assert.equal(result[0].text, "完成业务验收，然后安排上线验证。");
+});
+
 test("时间不相邻的相同表达不得作为边界重复删除", () => {
   const result = composeCanonicalFileSegments([{
     text: "完成业务验收。然后安排上线验证。",

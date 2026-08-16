@@ -34,14 +34,61 @@ function sourceIndexAfterComparableOffset(value, comparableOffset) {
 
 // 只接受“上一稳定稿的结尾 = 新窗口开头”的连续重叠，不能用泛化 LCS
 // 删除字符：会议中同一句话被重复说出并不少见，泛化匹配会误删真实内容。
-function findBoundaryPrefixOverlap(previousText, candidateText, { minimumChars = 6 } = {}) {
+function editDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = new Array(right.length + 1).fill(0);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    current[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        current[rightIndex - 1] + 1,
+        previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    for (let index = 0; index <= right.length; index += 1) previous[index] = current[index];
+  }
+  return previous[right.length];
+}
+
+function findBoundaryPrefixOverlap(
+  previousText,
+  candidateText,
+  {
+    minimumChars = 6,
+    fuzzyMinimumChars = 12,
+    fuzzySimilarity = 0.78,
+  } = {},
+) {
   const previous = comparableText(previousText);
   const candidate = comparableText(candidateText);
   const limit = Math.min(previous.length, candidate.length, 240);
   for (let size = limit; size >= minimumChars; size -= 1) {
     if (previous.slice(-size) === candidate.slice(0, size)) return size;
   }
-  return 0;
+  // 同一段音频经过相邻两次文件 ASR 后，少量同音字、漏字和口头词通常不一致。
+  // 这里仍只比较“上一段连续后缀”和“下一段连续前缀”，并要求较长且高度相似；
+  // 不做全文 LCS，避免把会议中真实复述误删。
+  let bestFuzzy = null;
+  const fuzzySuffixLimit = Math.min(previous.length, 240);
+  for (let suffixSize = fuzzySuffixLimit; suffixSize >= fuzzyMinimumChars; suffixSize -= 1) {
+    const suffix = previous.slice(-suffixSize);
+    const sizeDelta = Math.min(12, Math.max(2, Math.round(suffixSize * 0.15)));
+    const minimumPrefixSize = Math.max(fuzzyMinimumChars, suffixSize - sizeDelta);
+    const maximumPrefixSize = Math.min(candidate.length, suffixSize + sizeDelta);
+    for (let prefixSize = maximumPrefixSize; prefixSize >= minimumPrefixSize; prefixSize -= 1) {
+      const prefix = candidate.slice(0, prefixSize);
+      const similarity = 1 - editDistance(suffix, prefix) / Math.max(suffixSize, prefixSize);
+      if (similarity >= fuzzySimilarity && (
+        !bestFuzzy
+        || similarity > bestFuzzy.similarity
+        || (similarity === bestFuzzy.similarity && prefixSize > bestFuzzy.prefixSize)
+      )) {
+        bestFuzzy = { similarity, prefixSize };
+      }
+    }
+  }
+  return bestFuzzy?.prefixSize || 0;
 }
 
 function trimCandidateAgainstBoundary(candidate, boundaryText, boundaryEndMs, { maxGapMs = 10_000 } = {}) {
@@ -128,8 +175,10 @@ export function composeCanonicalFileSegments(
     if (conflictsWithManual) continue;
 
     const previous = output.at(-1);
-    if (!previous && boundary) {
-      const trimmed = trimCandidateAgainstBoundary(candidate, boundary.text, boundary.endMs);
+    // 前一个窗口的重复内容前面可能先返回一个很短的语气词，因此不能只检查
+    // 本窗口第一条。只在边界后 1.5 秒内持续对照上一稳定稿，范围外不再去重。
+    if (boundary) {
+      const trimmed = trimCandidateAgainstBoundary(candidate, boundary.text, boundary.endMs, { maxGapMs: 1_500 });
       if (!trimmed) continue;
       Object.assign(candidate, trimmed);
     }

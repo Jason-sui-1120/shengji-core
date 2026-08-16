@@ -11,6 +11,18 @@ import {
   cosineSimilarity as voiceCosineSimilarity, selectVoiceWindowSamples,
 } from "./voice-cluster.mjs";
 
+export function shouldApplyVoiceClusterProposal(row, proposal) {
+  if (!proposal || proposal.proposedSpeaker === "待识别") return false;
+  // 会后声纹只抽取少量窗口。由旧标签传播得到的推断不能覆盖已有的 45 秒
+  // 分离结果；只有直接命中声纹样本的证据才允许纠正 rolling_diarization。
+  const isPropagated = Boolean(proposal?.diagnostics?.propagatedFromLabel);
+  const hasRollingSpeaker = row?.speakerSource === "rolling_diarization"
+    && row?.speaker
+    && row.speaker !== "待识别"
+    && row.speaker !== "实时";
+  return !(isPropagated && hasRollingSpeaker);
+}
+
 /**
  * VoiceClusterService：声纹聚类回填服务。
  * 依赖注入 VoiceClusterStore（SQLite/MySQL 各自实现）+ AI 调用（extractSpeakerEmbedding）。
@@ -221,6 +233,7 @@ export class VoiceClusterService {
         unresolvedAutomaticCount += 1;
         continue;
       }
+      if (!shouldApplyVoiceClusterProposal(row, proposal)) continue;
       proposedCount += 1;
       const winner = {
         speaker: proposal.proposedSpeaker,
