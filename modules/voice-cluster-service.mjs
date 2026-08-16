@@ -7,7 +7,8 @@ import fs from "node:fs";
 import { hasAiAccess } from "./speaker-core.mjs";
 import { sliceWavBySeconds } from "./audio-utils.mjs";
 import {
-  assignTranscriptSpeakersWithLabelPropagation, buildVoiceWindows, clusterVoiceEmbeddings, cosineSimilarity as voiceCosineSimilarity,
+  assignTranscriptSpeakersWithLabelPropagation, buildVoiceWindows, clusterVoiceEmbeddings,
+  cosineSimilarity as voiceCosineSimilarity, selectVoiceWindowSamples,
 } from "./voice-cluster.mjs";
 
 /**
@@ -49,7 +50,12 @@ export class VoiceClusterService {
     for (const row of stableRows) {
       const start = Number(row.audioStartMs || 0) / 1000;
       const end = Number(row.audioEndMs || 0) / 1000;
-      if (end > start) words.push({ startSeconds: start, endSeconds: end, text: String(row.text || "") });
+      if (end > start) words.push({
+        startSeconds: start,
+        endSeconds: end,
+        text: String(row.text || ""),
+        legacySpeaker: String(row.speaker || "").trim(),
+      });
     }
 
     // 2. 切语音块（1.2-5.5s）
@@ -60,11 +66,9 @@ export class VoiceClusterService {
 
     // 3. 逐块提取声纹（并发 4 路）
     // 会后聚类是后台增强，不应把整场会议的所有语音窗逐一送去声纹服务。
-    // 均匀抽样 16 个窗口足以覆盖常见 2-6 人会议，并把最坏调用轮次固定为 4 批。
+    // 固定 16 个窗口：先覆盖已有临时标签，再均匀补齐全场，把最坏调用轮次固定为 4 批。
     const maxSamples = Math.max(12, Number(options.maxSamples || 16));
-    const sampled = windows.length <= maxSamples
-      ? windows
-      : Array.from({ length: maxSamples }, (_, i) => windows[Math.min(windows.length - 1, Math.floor(i * windows.length / maxSamples))]);
+    const sampled = selectVoiceWindowSamples(windows, maxSamples, { minPerLabel: 2 });
     console.log(`[voice-cluster] meeting=${key} windows=${windows.length} sampled=${sampled.length} extracting embeddings...`);
 
     // 3a. 加载会议内已缓存的声纹
@@ -203,11 +207,19 @@ export class VoiceClusterService {
     });
     const assignments = [];
     let propagatedCount = 0;
+    let changedSpeakerCount = 0;
+    let proposedCount = 0;
+    let unresolvedAutomaticCount = 0;
+    const eligibleRows = rows.filter((row) => !row.userEdited && row.speakerSource !== "manual");
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
       if (row.userEdited || row.speakerSource === "manual") continue;
       const proposal = proposedRows[index];
-      if (!proposal || proposal.proposedSpeaker === "待识别") continue;
+      if (!proposal || proposal.proposedSpeaker === "待识别") {
+        unresolvedAutomaticCount += 1;
+        continue;
+      }
+      proposedCount += 1;
       const winner = {
         speaker: proposal.proposedSpeaker,
         confidence: proposal.proposedConfidence,
@@ -217,6 +229,7 @@ export class VoiceClusterService {
       };
       if (row.speaker !== winner.speaker || row.speakerSource !== "post_meeting_voice_cluster") {
         assignments.push({ row, winner });
+        if (row.speaker !== winner.speaker) changedSpeakerCount += 1;
         if (proposal?.diagnostics?.propagatedFromLabel) propagatedCount += 1;
       }
     }
@@ -238,8 +251,12 @@ export class VoiceClusterService {
       speakerCount: new Set(turns.map((t) => t.speaker).filter((s) => s !== "待识别")).size,
       turnCount: turns.length,
       updatedCount: applied.updatedCount,
+      changedSpeakerCount,
       propagatedCount,
-      transcriptCoverage: Number((assignments.length / Math.max(1, rows.filter((row) => !row.userEdited && row.speakerSource !== "manual").length)).toFixed(3)),
+      transcriptCoverage: Number((proposedCount / Math.max(1, eligibleRows.length)).toFixed(3)),
+      unresolvedAutomaticCount,
+      eligibleLegacySpeakerCount: new Set(eligibleRows.map((row) => String(row.speaker || "").trim()).filter((label) => label && label !== "待识别" && label !== "实时")).size,
+      sampledLegacySpeakerCount: new Set(sampled.map((window) => String(window.legacySpeaker || "").trim()).filter((label) => label && label !== "待识别" && label !== "实时")).size,
       stableRevision: applied.stableRevision,
     };
   }

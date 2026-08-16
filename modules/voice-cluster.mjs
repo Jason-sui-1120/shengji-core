@@ -54,17 +54,21 @@ export function buildVoiceWindows(words, options = {}) {
   for (const word of [...(words || [])].sort((a, b) => a.startSeconds - b.startSeconds)) {
     const startSeconds = Math.max(fromSeconds, Number(word.startSeconds || 0));
     const endSeconds = Math.min(toSeconds, Number(word.endSeconds || 0));
+    const legacySpeaker = String(word.legacySpeaker || word.speaker || "").trim();
     if (!(endSeconds > startSeconds)) continue;
     if (!current) {
-      current = { startSeconds, endSeconds, text: String(word.text || "") };
+      current = { startSeconds, endSeconds, text: String(word.text || ""), legacySpeaker };
       continue;
     }
     const gap = startSeconds - current.endSeconds;
     const nextDuration = endSeconds - current.startSeconds;
+    // 已有会中轨道虽然不是最终真值，但它仍是可靠的“可能换人”边界。
+    // 不允许把两个不同临时标签拼进同一个声纹窗口，否则 embedding 本身就会混人。
+    const speakerChanged = Boolean(current.legacySpeaker && legacySpeaker && current.legacySpeaker !== legacySpeaker);
     // 达到目标长度后，在自然停顿处优先提交；超过上限则绝不继续扩大。
-    if (gap > maxGapSeconds || nextDuration > maxSeconds || (current.endSeconds - current.startSeconds >= targetSeconds && gap >= 0.18)) {
+    if (speakerChanged || gap > maxGapSeconds || nextDuration > maxSeconds || (current.endSeconds - current.startSeconds >= targetSeconds && gap >= 0.18)) {
       commit();
-      current = { startSeconds, endSeconds, text: String(word.text || "") };
+      current = { startSeconds, endSeconds, text: String(word.text || ""), legacySpeaker };
       continue;
     }
     current.endSeconds = Math.max(current.endSeconds, endSeconds);
@@ -72,6 +76,54 @@ export function buildVoiceWindows(words, options = {}) {
   }
   commit();
   return windows;
+}
+
+/**
+ * 在固定调用预算内优先覆盖已有临时说话人标签，再用全场均匀样本补齐。
+ * 旧标签只作为抽样分层和切窗边界，不直接当最终身份；真正身份仍由声纹聚类决定。
+ */
+export function selectVoiceWindowSamples(windows, maxSamples = 16, options = {}) {
+  const ordered = [...(windows || [])].sort((a, b) => Number(a.startSeconds || 0) - Number(b.startSeconds || 0));
+  const limit = Math.max(1, Math.floor(Number(maxSamples || 16)));
+  if (ordered.length <= limit) return ordered;
+
+  const minPerLabel = Math.max(1, Math.floor(Number(options.minPerLabel ?? 2)));
+  const pendingLabels = new Set(["", "待识别", "实时"]);
+  const groups = new Map();
+  for (let index = 0; index < ordered.length; index += 1) {
+    const label = String(ordered[index]?.legacySpeaker || "").trim();
+    if (pendingLabels.has(label)) continue;
+    const group = groups.get(label) || { label, indexes: [], seconds: 0, firstIndex: index };
+    group.indexes.push(index);
+    group.seconds += Math.max(0, Number(ordered[index].endSeconds || 0) - Number(ordered[index].startSeconds || 0));
+    groups.set(label, group);
+  }
+
+  const uniformIndexes = (indexes, count) => {
+    if (indexes.length <= count) return indexes;
+    const selected = [];
+    for (let i = 0; i < count; i += 1) {
+      selected.push(indexes[Math.min(indexes.length - 1, Math.floor((i + 0.5) * indexes.length / count))]);
+    }
+    return selected;
+  };
+
+  const selected = new Set();
+  const maxCoveredGroups = Math.max(1, Math.floor(limit / minPerLabel));
+  const prioritizedGroups = [...groups.values()]
+    .sort((left, right) => right.seconds - left.seconds || left.firstIndex - right.firstIndex)
+    .slice(0, maxCoveredGroups);
+  for (const group of prioritizedGroups) {
+    for (const index of uniformIndexes(group.indexes, Math.min(minPerLabel, group.indexes.length))) selected.add(index);
+  }
+
+  // 剩余预算保持全场时间覆盖，避免只照顾旧标签而漏掉待识别片段或新说话人。
+  for (const index of uniformIndexes(ordered.map((_, i) => i), limit)) {
+    if (selected.size >= limit) break;
+    selected.add(index);
+  }
+  for (let index = 0; selected.size < limit && index < ordered.length; index += 1) selected.add(index);
+  return [...selected].sort((a, b) => a - b).map((index) => ordered[index]);
 }
 
 /**

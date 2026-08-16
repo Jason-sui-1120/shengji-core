@@ -1,5 +1,5 @@
 {
-  "version": "1.18.2",
+  "version": "1.18.3",
   "releasedAt": "2026-08-16",
   "description": "shengji-core 后端共享逻辑唯一源。两端只能通过 sync-core.mjs 受控复制，不能直接修改副本。",
   "modules": [
@@ -137,7 +137,7 @@
     },
     {
       "file": "voice-cluster-service.mjs",
-      "sha256": "a6171f683a9b3f7f51a4d9d6b7e3f0465a257279d5a7e8d88dd9524142b93617"
+      "sha256": "b53f0e8685b7db168881100a7f5a6d560249d11a3a0f69966224d88e341c98e4"
     },
     {
       "file": "voice-cluster-store.mjs",
@@ -145,7 +145,7 @@
     },
     {
       "file": "voice-cluster.mjs",
-      "sha256": "1c1eb25e4d7cccec936e1efd1c367f868c860785974350d93ab897c7d5529406"
+      "sha256": "7b7ed33492f9ff7816779901f335eb619b4c5a06f1f2dc3de0b579129bd650d2"
     },
     {
       "file": "voice-features.mjs",
@@ -275,7 +275,7 @@
     },
     {
       "file": "voice-cluster.test.mjs",
-      "sha256": "aab8d073fcd998efcf4241ad2b6ae756e3f37e96c24a7787f76c63bb0270f543"
+      "sha256": "e683e7ab156e53711b4291e34882fd033fcf853364272c2f7959d58a6608fd10"
     },
     {
       "file": "asr-model-candidates.test.mjs",
